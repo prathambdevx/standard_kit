@@ -1,0 +1,20 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   iOS Safari base fixes — MERGE INTO your globals.css. These are defaults
+   that cost nothing on other browsers and prevent whole categories of iOS
+   bugs from ever occurring, instead of patching each occurrence per-icon.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* iOS Safari clips inline-SVG content to the viewBox by default (the UA
+   stylesheet sets overflow:hidden on the outer <svg>) — it shaves any stroke
+   halo or curve that sits on the viewBox edge: circular icon rings, a heart
+   icon's lobes, a star's points, etc. Chrome/Firefox don't do this, so the
+   bug is invisible outside real iOS/Safari testing.
+   Default every icon svg to overflow:visible; an explicit overflow-hidden
+   utility on a specific instance still wins (this is @layer base). If an
+   SVG genuinely needs to self-clip (a partial-fill graphic), clip via a
+   wrapping <div>, not the <svg>'s own overflow. */
+@layer base {
+  svg {
+    overflow: visible;
+  }
+}

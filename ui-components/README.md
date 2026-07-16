@@ -56,9 +56,21 @@ with the math.
   trapped. Wire it into your own scroll-row component the way `edge_scroll/index.tsx` does (merged
   ref) — it's a hook, not a wrapper component, so it composes into whatever rail markup you have.
 - **`useBodyScrollLock.ts`** — locks page scroll while a drawer/modal is open (used by `drawer.tsx`).
+  Pins `<body>` with `position: fixed` rather than `overflow: hidden` — the latter is a no-op for
+  touch-drag on iOS Safari. Ref-counted (via a DOM attribute, so it survives hot-reload) so
+  overlapping locks — one overlay opening another — don't fight each other. See the
+  `ios-safari-fixes` kit for why this specific technique is required on iOS.
 - **`useParallax.ts`** — scroll-linked vertical translate for a layer inside an `overflow-hidden`
   frame; `speed` is the fraction of the element's own height it travels across a full viewport pass.
   Honors `prefers-reduced-motion`. Pairs with `components/transitions/parallax/`.
+- **`useApiQuery.ts`** + **`useApiMutation.ts`** — thin, generic TanStack Query wrappers: `useApiQuery`
+  exposes just the options you actually vary per call (`staleTime`, `gcTime`, `retry`, `enabled`,
+  `placeholderData`) over sensible app-wide defaults; `useApiMutation` adds declarative
+  `invalidateQueries` + `updateQueries` (optimistic/direct cache patch) on top of `useMutation`, so a
+  call site rarely needs to touch `queryClient` directly. Pair with `providers/QueryProvider.tsx`,
+  which sets the actual defaults (`staleTime: 5min`, `gcTime: 10min`, `retry: 0` for queries / `1` for
+  mutations, no refetch-on-window-focus) — every component-level hook inherits these unless it
+  overrides them.
 
 ### `components/transitions/` — reusable animation wrappers, one per file
 
@@ -81,6 +93,15 @@ Saves per-URL scroll position as the user scrolls, restores it on browser back/f
 setup lives in `scroll_restoration.ts` (module-scoped, so it survives the shell remounting on a
 suspended page) — `ScrollRestoration` just kicks off the one-time init on mount. Drop the provider
 once near your app root (e.g. in the root layout's client-providers wrapper).
+
+### `providers/QueryProvider.tsx` — TanStack Query defaults
+
+Wraps the app in a `QueryClientProvider` with one `QueryClient` instance created once via
+`useState(() => ...)` (never re-created across re-renders). Sets the app-wide defaults every
+`useApiQuery`/`useApiMutation` call inherits: `staleTime` 5min, `gcTime` 10min, `retry` 0 for
+queries / 1 for mutations, exponential retry backoff capped at 30s, no refetch-on-window-focus.
+Adjust these numbers to your project's actual data-freshness needs — they're a starting point,
+not a law.
 
 ### `utils/view_transition.ts` — View Transitions API helpers
 

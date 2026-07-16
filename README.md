@@ -20,7 +20,8 @@ conventions differ per repo, but the underlying rules and workflow don't.
 | **`build-page/`** | Page/component generation skills from a CSS dump or Figma MCP URL, plus the spacing-decision rule they depend on |
 | **`image-optimization/`** | Next.js image audit skill — correct width/height/sizes/quality/priority, with a savings-estimate report format |
 | **`web-conventions/`** | React/Next.js engineering skills — layout-thrashing fixes, state-management decision tree, perf rule pass, hook conventions, 39 react-best-practices rules, App Router patterns |
-| **`ui-components/`** | A production atom library (Button/Img/Picture/Alink + accordion/drawer/select/media/video/carousel/…), a mouse-wheel scroll hook, and a reusable area-accurate SVG-fill math utility |
+| **`ui-components/`** | A production atom library (Button/Img/Picture/Alink + accordion/drawer/select/media/video/carousel/…), animation wrappers + motion tokens, scroll-restoration/view-transition helpers, TanStack Query wrapper hooks + provider, string/time/phone utils, and a reusable area-accurate SVG-fill math utility |
+| **`ios-safari-fixes/`** | 6 recurring iOS Safari rendering bugs (SVG clipping, `w-auto` cropping, input auto-zoom, `dvh` viewport jump, scroll-lock, safe-area double-stacking) — a skill doc with real before/after fixes + a static validator that catches 4 of them mechanically |
 | **`fluid-setup/`** | One-time installer for a fluid (`fl-*`) responsive-scaling system on Tailwind v4 — replaces breakpoint-stepped sizes with two-anchor values that glide smoothly between a mobile and desktop design width |
 
 More kits get added here over time as they prove themselves on real projects.
