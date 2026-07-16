@@ -71,6 +71,10 @@ with the math.
   which sets the actual defaults (`staleTime: 5min`, `gcTime: 10min`, `retry: 0` for queries / `1` for
   mutations, no refetch-on-window-focus) — every component-level hook inherits these unless it
   overrides them.
+- **`useDebouncedValue.ts`** — returns a copy of a value that only updates after it's stayed
+  unchanged for `delayMs` (default 300). Keeps an input instant while throttling an expensive
+  downstream effect — a search box's own text stays responsive while the network request/filter
+  pass it triggers only fires once typing pauses.
 
 ### `components/transitions/` — reusable animation wrappers, one per file
 
