@@ -1,0 +1,52 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   Motion tokens + keyframes for reveal_up / reveal_on_scroll — MERGE INTO
+   your globals.css (inside a @theme block for the tokens, top-level for the
+   @keyframes/@utility rules). Everything here is Tailwind v4 (@utility) —
+   for Tailwind v3, convert @utility blocks to plain CSS classes.
+   ───────────────────────────────────────────────────────────────────────── */
+
+@theme {
+  --motion-duration-fast: 200ms;   /* micro-interactions: hovers, toggles */
+  --motion-duration-medium: 250ms; /* large surfaces entering: drawers/sheets */
+  --motion-duration-base: 400ms;   /* standard: carousels */
+  --motion-duration-slow: 700ms;   /* entrances: section/text reveals */
+  --motion-delay-step: 120ms;      /* stagger step between sibling reveals */
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1); /* decisive start, soft landing */
+}
+
+@keyframes reveal-up {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@utility animate-reveal-up {
+  animation: reveal-up var(--motion-duration-slow) var(--motion-ease) both;
+}
+
+@keyframes reveal-up-far {
+  from {
+    opacity: 0;
+    transform: translateY(40px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@utility animate-reveal-up-far {
+  animation: reveal-up-far var(--motion-duration-slow) var(--motion-ease) both;
+}
+
+/* Accessibility: entrances collapse to instant for users who asked the OS
+   for less motion. Extend this list if you add more animate-* utilities. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-reveal-up,
+  .animate-reveal-up-far {
+    animation-duration: 1ms;
+  }
+}

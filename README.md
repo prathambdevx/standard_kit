@@ -19,6 +19,8 @@ conventions differ per repo, but the underlying rules and workflow don't.
 | **`comments/`** | Comment-style rules (frontend + backend) + a hook that reminds the model of them right after every edit |
 | **`build-page/`** | Page/component generation skills from a CSS dump or Figma MCP URL, plus the spacing-decision rule they depend on |
 | **`image-optimization/`** | Next.js image audit skill — correct width/height/sizes/quality/priority, with a savings-estimate report format |
+| **`web-conventions/`** | React/Next.js engineering skills — layout-thrashing fixes, state-management decision tree, perf rule pass, hook conventions, 39 react-best-practices rules, App Router patterns |
+| **`ui-components/`** | A production atom library (Button/Img/Picture/Alink + accordion/drawer/select/media/video/carousel/…), a mouse-wheel scroll hook, and a reusable area-accurate SVG-fill math utility |
 | **`fluid-setup/`** | One-time installer for a fluid (`fl-*`) responsive-scaling system on Tailwind v4 — replaces breakpoint-stepped sizes with two-anchor values that glide smoothly between a mobile and desktop design width |
 
 More kits get added here over time as they prove themselves on real projects.
