@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fluid scaling — the capped-zoom model (interactive)</title>
+</head>
+<body>
+<style>
+  :root{
+    --ground:#FBFAF7; --panel:#F3F0E9; --ink:#1A1813; --dim:#6F6A60;
+    --line:#E6E2D8; --line-strong:#D7D2C6; --gold:#B27D14; --gold-2:#8A5E10;
+    --gold-soft:rgba(178,125,20,.12); --grid:rgba(26,24,19,.07);
+    --sans:"Helvetica Neue",Helvetica,Arial,system-ui,sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--ground:#131210;--panel:#1C1A15;--ink:#F1EEE6;--dim:#9C968A;--line:#2B2823;--line-strong:#3A362F;--gold:#D7A23C;--gold-2:#E7BC63;--gold-soft:rgba(215,162,60,.15);--grid:rgba(241,238,230,.08);}
+  }
+  :root[data-theme="light"]{--ground:#FBFAF7;--panel:#F3F0E9;--ink:#1A1813;--dim:#6F6A60;--line:#E6E2D8;--line-strong:#D7D2C6;--gold:#B27D14;--gold-2:#8A5E10;--gold-soft:rgba(178,125,20,.12);--grid:rgba(26,24,19,.07);}
+  :root[data-theme="dark"]{--ground:#131210;--panel:#1C1A15;--ink:#F1EEE6;--dim:#9C968A;--line:#2B2823;--line-strong:#3A362F;--gold:#D7A23C;--gold-2:#E7BC63;--gold-soft:rgba(215,162,60,.15);--grid:rgba(241,238,230,.08);}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased;line-height:1.55;}
+  .wrap{max-width:960px;margin:0 auto;padding:clamp(28px,5vw,72px) clamp(20px,4vw,40px) 96px;}
+  .eyebrow{font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--gold);font-weight:700;margin:0 0 14px;}
+  h1{font-size:clamp(34px,6vw,58px);line-height:1.02;letter-spacing:-.02em;font-weight:700;margin:0 0 18px;text-wrap:balance;}
+  .lede{font-size:clamp(16px,2.2vw,19px);color:var(--dim);max-width:64ch;margin:0;font-weight:400;}
+  .lede b{color:var(--ink);font-weight:600;}
+  .toc{margin:28px 0 0;padding:16px 20px;border:1px solid var(--line);border-radius:4px;background:var(--panel);display:grid;grid-template-columns:repeat(2,1fr);gap:4px 28px;}
+  .toc a{color:var(--ink);text-decoration:none;font-size:13px;display:flex;gap:10px;padding:3px 0;border-bottom:1px solid transparent;}
+  .toc a:hover{border-bottom-color:var(--gold);}
+  .toc .tn{font-family:var(--mono);color:var(--gold);font-size:12px;}
+  hr.rule{border:0;border-top:1px solid var(--line);margin:clamp(38px,5.5vw,60px) 0;}
+  section{scroll-margin-top:20px;}
+  h2{font-size:13px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;color:var(--ink);margin:0 0 18px;display:flex;align-items:baseline;gap:12px;}
+  h2 .n{font-family:var(--mono);color:var(--gold);font-size:12px;font-weight:400;}
+  p.body{font-size:15.5px;color:var(--dim);max-width:66ch;margin:0 0 12px;}
+  p.body b{color:var(--ink);font-weight:600;}
+  .vs{font-family:var(--mono);font-size:.92em;color:var(--ink);}
+  .figure{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:clamp(14px,2.5vw,24px);overflow-x:auto;}
+  .figure svg{display:block;width:100%;height:auto;min-width:560px;}
+  .cap{font-size:12.5px;color:var(--dim);margin:14px 2px 0;letter-spacing:.01em;}
+  .cap b{color:var(--ink);font-weight:600;}
+  .lg{display:flex;flex-wrap:wrap;gap:18px;margin:0 2px 14px;}
+  .lg span{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--dim);}
+  .lg i{width:20px;height:0;border-top-width:2.5px;border-top-style:solid;display:inline-block;}
+  .zones,.two,.scope{display:grid;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:4px;overflow:hidden;}
+  .zones{grid-template-columns:repeat(3,1fr);margin-top:6px;}
+  .two{grid-template-columns:1fr 1fr;}
+  .scope{grid-template-columns:repeat(3,1fr);}
+  .zones>div,.two>div,.scope>div{background:var(--ground);padding:17px 18px 19px;}
+  .zh{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:8px;}
+  .zt{font-weight:700;font-size:14px;}
+  .zr{font-family:var(--mono);font-size:12px;color:var(--gold);}
+  .zones p,.two p,.scope .sd{margin:0;font-size:13px;color:var(--dim);line-height:1.5;}
+  .two .zt{margin-bottom:6px;display:block;}
+  .scope .sl{font-weight:700;font-size:14px;margin-bottom:3px;}
+  .tbl-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:4px;}
+  table{border-collapse:collapse;width:100%;min-width:560px;font-variant-numeric:tabular-nums;}
+  caption{caption-side:top;text-align:left;font-size:12.5px;color:var(--dim);padding:0 0 12px;}
+  th,td{padding:11px 15px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap;}
+  thead th{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--dim);font-weight:600;border-bottom:1px solid var(--line-strong);}
+  th.lbl,td.lbl{text-align:left;}
+  tbody th{font-weight:600;font-size:13.5px;color:var(--ink);}
+  tbody th .sub{display:block;font-family:var(--mono);font-size:11.5px;color:var(--dim);font-weight:400;margin-top:2px;}
+  td{font-family:var(--mono);font-size:13.5px;color:var(--ink);}
+  td.anchor{color:var(--gold);font-weight:600;background:var(--gold-soft);}
+  tr.grp th{background:var(--panel);color:var(--gold);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;padding:8px 15px;text-align:left;}
+  tbody tr:last-child td,tbody tr:last-child th{border-bottom:0;}
+  .col-note{font-size:10px;color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0;display:block;margin-top:2px;}
+  .foot{margin-top:60px;padding-top:20px;border-top:1px solid var(--line);font-size:12px;color:var(--dim);display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;letter-spacing:.02em;}
+  @media (max-width:640px){.zones,.two,.scope,.toc{grid-template-columns:1fr}}
+  @media print{
+    :root{--ground:#fff;--panel:#F5F2EB;--ink:#1A1813;--dim:#5F5A50;--line:#DDD8CC;--line-strong:#CFC9BC;--gold:#9A6B10;--gold-2:#7A5410;--gold-soft:rgba(154,107,16,.12);--grid:rgba(0,0,0,.08);}
+    .wrap{max-width:none;padding:0 4mm;}.toc{display:none;}
+    section,.figure,.zones,.two,.tbl-scroll,.scope{break-inside:avoid;}hr.rule{margin:22px 0;}
+  }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Bombay Shirt Company · Storefront</p>
+  <h1>Fluid Scaling</h1>
+  <p class="lede">Every size — type, spacing, widths, heights — is set from <b>two values: its size at a 360&nbsp;px screen and its size at a 1440&nbsp;px screen</b>. The build renders those two exactly and scales continuously between and beyond them. This reference records how that behaves in every case.</p>
+
+  <nav class="toc" aria-label="Contents">
+    <a href="#anchors"><span class="tn">01</span> The two anchors</a>
+    <a href="#zones"><span class="tn">02</span> Three zones</a>
+    <a href="#cap"><span class="tn">03</span> The cap</a>
+    <a href="#flat"><span class="tn">04</span> Flat &amp; frozen</a>
+    <a href="#inverted"><span class="tn">05</span> Inverted sizes</a>
+    <a href="#single"><span class="tn">06</span> Single-anchor</a>
+    <a href="#lh"><span class="tn">07</span> Line-height &amp; letter-spacing</a>
+    <a href="#examples"><span class="tn">08</span> Examples</a>
+    <a href="#pagecap"><span class="tn">09</span> Page cap</a>
+    <a href="#overlay"><span class="tn">10</span> Overlay text</a>
+    <a href="#a11y"><span class="tn">11</span> Accessibility</a>
+    <a href="#coverage"><span class="tn">12</span> Coverage</a>
+  </nav>
+
+  <hr class="rule">
+  <section id="anchors">
+    <h2><span class="n">01</span> The two anchors</h2>
+    <p class="body"><b>360&nbsp;px and 1440&nbsp;px render the design values exactly.</b> Screen widths between the two are interpolated. Widths above 1440&nbsp;px zoom up to a maximum at 1920&nbsp;px, then hold. A size is written <span class="vs">[value @360, value @1440]</span>.</p>
+  </section>
+
+  <hr class="rule">
+  <section id="zones">
+    <h2><span class="n">02</span> Three zones</h2>
+    <div class="figure" style="margin-bottom:22px">
+      <div class="lg" id="legend"></div>
+      <svg id="chart" viewBox="0 0 920 400" role="img" aria-label="Rendered size versus screen width for three example elements"></svg>
+    </div>
+    <div class="zones">
+      <div><div class="zh"><span class="zt">Mobile</span><span class="zr">360–480</span></div><p>The size zooms up with the screen — capped so it grows at most 1.33× its 360&nbsp;px value, and never past its 1440&nbsp;px value.</p></div>
+      <div><div class="zh"><span class="zt">Glide</span><span class="zr">480–1440</span></div><p>A straight line to the 1440&nbsp;px value. Continuous with the mobile zone — no step at any breakpoint.</p></div>
+      <div><div class="zh"><span class="zt">Wide</span><span class="zr">1440–1920</span></div><p>A gentle zoom, reaching +16.7% at 1920&nbsp;px. Held constant beyond 1920&nbsp;px.</p></div>
+    </div>
+    <p class="cap">Horizontal: screen width (px). Vertical: rendered size (px). Dashed verticals mark the <b>360</b> and <b>1440</b> anchors; gold dots sit on the exact design values.</p>
+  </section>
+
+  <hr class="rule">
+  <section id="cap">
+    <h2><span class="n">03</span> The cap</h2>
+    <p class="body">On mobile a size can grow to at most <b>1.33× its 360&nbsp;px value</b>, and <b>never beyond its 1440&nbsp;px value</b> — whichever is smaller. This produces two behaviors, decided by how the 1440&nbsp;px value compares to 1.33× the 360&nbsp;px value:</p>
+    <div class="two" style="margin-bottom:20px">
+      <div><span class="zt">Reach early, then hold</span><p>When the 1440 value is within 1.33× the 360 value, the size reaches it on mobile and holds flat across the whole desktop range. <span class="vs">e.g. [12,14]</span></p></div>
+      <div><span class="zt">Glide all the way</span><p>When the 1440 value is larger than 1.33× the 360 value, the size hits the 1.33× ceiling on mobile, then keeps gliding to the 1440 value. <span class="vs">e.g. [12,20]</span></p></div>
+    </div>
+    <div class="tbl-scroll"><table id="capTable"></table></div>
+  </section>
+
+  <hr class="rule">
+  <section id="flat">
+    <h2><span class="n">04</span> Flat &amp; frozen</h2>
+    <div class="two">
+      <div><span class="zt">Flat — equal values</span><p>When both values match <span class="vs">[12,12]</span>, the size holds at that value from 360 through 1440 (there is nothing to grow toward), then takes the gentle wide-zone zoom above 1440. Used for text whose design size is the same on mobile and desktop.</p></div>
+      <div><span class="zt">Frozen — never moves</span><p>A separate marked form holds a value constant at <em>every</em> width, including the wide zone. Reserved for 1&nbsp;px hairlines, borders, and alignment constants that must not scale at all.</p></div>
+    </div>
+  </section>
+
+  <hr class="rule">
+  <section id="inverted">
+    <h2><span class="n">05</span> Inverted sizes</h2>
+    <p class="body">The 360 value may be <b>larger</b> than the 1440 value <span class="vs">[16,12]</span>. The size then glides <b>down</b> from mobile to desktop, exact at both anchors, and holds beyond 1440. Used where an element is intentionally larger on phones than on desktop.</p>
+    <div class="tbl-scroll"><table id="invTable"></table></div>
+  </section>
+
+  <hr class="rule">
+  <section id="single">
+    <h2><span class="n">06</span> Single-anchor sizes</h2>
+    <p class="body">An element that exists on only one layout is defined by a <b>single value</b> rather than a pair.</p>
+    <div class="two">
+      <div><span class="zt">Mobile-only</span><p>Defined by its phone value <span class="vs">[24]</span>. Zooms up with the screen to 1.33× (24 → 32 by 480&nbsp;px), then holds. For elements shown only on phones.</p></div>
+      <div><span class="zt">Desktop-only</span><p>Defined by its desktop value <span class="vs">[60]</span>. Fixed at that value up to 1440&nbsp;px, then the gentle wide-zone zoom (60 → 70 at 1920&nbsp;px). For elements shown only on desktop.</p></div>
+    </div>
+  </section>
+
+  <hr class="rule">
+  <section id="lh">
+    <h2><span class="n">07</span> Line-height &amp; letter-spacing</h2>
+    <div class="two">
+      <div><span class="zt">Line-height</span><p>Set as a ratio of the font size, so it scales together with the text at every width — the line box stays proportional as the type grows or shrinks.</p></div>
+      <div><span class="zt">Letter-spacing</span><p>Set in em, so it also scales with the font. Where the design calls for it, letter-spacing can change to a different value at the desktop breakpoint (a step, not a glide).</p></div>
+    </div>
+  </section>
+
+  <hr class="rule">
+  <section id="examples">
+    <h2><span class="n">08</span> Examples</h2>
+    <p class="body" style="margin-bottom:20px">Real elements across type, spacing, and dimensions. Each is written <span class="vs">[360 value, 1440 value]</span>; gold cells are the exact design anchors.</p>
+    <div class="tbl-scroll"><table id="exTable"></table></div>
+    <p class="cap" style="margin-top:14px">The same two-value rule and the same three zones govern font size, spacing, and dimensions alike.</p>
+  </section>
+
+  <hr class="rule">
+  <section id="pagecap">
+    <h2><span class="n">09</span> Wide-screen page cap</h2>
+    <p class="body">Page content stops widening at <b>1920&nbsp;px</b> and centers on larger screens. Full-bleed color bands and imagery still reach the true screen edge; only the content column is capped.</p>
+  </section>
+
+  <hr class="rule">
+  <section id="overlay">
+    <h2><span class="n">10</span> Overlay text on banners</h2>
+    <p class="body">Headlines and captions set <b>over banner imagery</b> scale to the <b>width of their copy column</b>, not the viewport — so the text stays locked in proportion to the artwork it sits on as the banner resizes, and wrap points hold.</p>
+  </section>
+
+  <hr class="rule">
+  <section id="a11y">
+    <h2><span class="n">11</span> Accessibility</h2>
+    <div class="two">
+      <div><span class="zt">Browser &amp; OS zoom</span><p>Sizes are rem-based, so increasing the browser or OS text size enlarges everything proportionally — the fluid scaling does not lock users out of zoom.</p></div>
+      <div><span class="zt">Form inputs</span><p>Text inside form fields stays at least 16&nbsp;px on mobile, so focusing an input does not trigger the automatic page-zoom on iOS Safari.</p></div>
+    </div>
+  </section>
+
+  <hr class="rule">
+  <section id="coverage">
+    <h2><span class="n">12</span> Coverage</h2>
+    <p class="body" style="margin-bottom:18px">Surfaces on this system today:</p>
+    <div class="scope">
+      <div><div class="sl">Homepage</div><div class="sd">All sections, including banner overlay text.</div></div>
+      <div><div class="sl">Site chrome</div><div class="sd">Header, footer, navigation, and search.</div></div>
+      <div><div class="sl">Product page</div><div class="sd">All product types — gallery, info, reviews, rails, and the size-guide.</div></div>
+    </div>
+  </section>
+
+  <div class="foot">
+    <span>Fluid Scaling — Implementation Reference</span>
+    <span>Anchors 360 / 1440 · Wide cap 1920</span>
+  </div>
+</div>
+
+<script>
+(function(){
+  var WIDE=7/6;
+  function cap(a,b){return Math.min(4*a/3,b);}
+  function evaluate(a,b,vw){
+    if(b<a){var t=Math.min(Math.max((vw-360)/1080,0),1);return a+(b-a)*t;}
+    var c=cap(a,b);
+    var L={lower:{k:0,r:a},mob:{k:a/3.6,r:0},glide:{k:(b-c)/9.6,r:c-(b-c)/2},wide:{k:b/28.8,r:b/2},freeze:{k:0,r:WIDE*b}};
+    var at=function(o){return o.r+o.k*vw/100;};
+    var tail=Math.min(at(L.wide),at(L.freeze));
+    var desk=b<=2*a?Math.max(at(L.glide),tail):Math.min(at(L.glide),tail);
+    return a===0?Math.max(at(L.lower),desk):Math.max(at(L.lower),Math.min(at(L.mob),desk));
+  }
+  var r1=function(n){return Math.round(n*10)/10;};
+  var curves=[
+    {label:'Caption / label',a:12,b:12,color:'var(--dim)',dash:'4 4'},
+    {label:'Product title',a:14,b:16,color:'var(--gold)',dash:''},
+    {label:'Section heading',a:24,b:40,color:'var(--ink)',dash:''}
+  ];
+  var W=920,H=400,padL=52,padR=22,padT=26,padB=46,vwMin=320,vwMax=2000,szMin=10,szMax=48;
+  var X=function(vw){return padL+(vw-vwMin)/(vwMax-vwMin)*(W-padL-padR);};
+  var Y=function(sz){return (H-padB)-(sz-szMin)/(szMax-szMin)*((H-padB)-padT);};
+  var svg='';
+  [[360,480],[1440,1920]].forEach(function(b){svg+='<rect x="'+X(b[0])+'" y="'+padT+'" width="'+(X(b[1])-X(b[0]))+'" height="'+((H-padB)-padT)+'" fill="rgba(178,125,20,.05)"/>';});
+  [12,16,24,32,40,48].forEach(function(sz){
+    svg+='<line x1="'+padL+'" y1="'+Y(sz)+'" x2="'+(W-padR)+'" y2="'+Y(sz)+'" style="stroke:var(--grid)" stroke-width="1"/>';
+    svg+='<text x="'+(padL-10)+'" y="'+(Y(sz)+4)+'" text-anchor="end" font-size="11" style="fill:var(--dim);font-family:var(--mono)">'+sz+'</text>';
+  });
+  [360,768,1024,1440,1920].forEach(function(vw){svg+='<text x="'+X(vw)+'" y="'+(H-padB+22)+'" text-anchor="middle" font-size="11" style="fill:var(--dim);font-family:var(--mono)">'+vw+'</text>';});
+  [360,1440].forEach(function(vw){svg+='<line x1="'+X(vw)+'" y1="'+padT+'" x2="'+X(vw)+'" y2="'+(H-padB)+'" style="stroke:var(--line-strong)" stroke-width="1" stroke-dasharray="3 4"/>';});
+  svg+='<text x="'+(W-padR)+'" y="'+(H-6)+'" text-anchor="end" font-size="11" letter-spacing="1.5" style="fill:var(--dim)">SCREEN WIDTH (PX)</text>';
+  curves.forEach(function(ex){
+    var pts=[];for(var vw=vwMin;vw<=vwMax;vw+=6){pts.push(X(vw).toFixed(1)+','+Y(evaluate(ex.a,ex.b,vw)).toFixed(1));}
+    svg+='<polyline points="'+pts.join(' ')+'" fill="none" stroke-width="2.5" stroke-dasharray="'+ex.dash+'" stroke-linejoin="round" style="stroke:'+ex.color+'"/>';
+    [360,1440].forEach(function(vw){svg+='<circle cx="'+X(vw)+'" cy="'+Y(evaluate(ex.a,ex.b,vw))+'" r="4" stroke-width="1.5" style="fill:var(--gold);stroke:var(--ground)"/>';});
+  });
+  document.getElementById('chart').innerHTML=svg;
+  var lg='';curves.forEach(function(ex){lg+='<span><i style="border-top-color:'+ex.color+';'+(ex.dash?'border-top-style:dashed;':'')+'"></i>'+ex.label+' <span style="font-family:var(--mono);color:var(--dim)">['+ex.a+','+ex.b+']</span></span>';});
+  document.getElementById('legend').innerHTML=lg;
+  function head(widths,anchors){var h='<thead><tr><th class="lbl">Element</th>';widths.forEach(function(w){h+='<th>'+w+'<span class="col-note">'+(anchors[w]?'anchor':'px')+'</span></th>';});return h+'</tr></thead>';}
+  function row(label,sub,a,b,widths,anchors){var r='<tr><th class="lbl">'+label+(sub?'<span class="sub">'+sub+'</span>':'')+'</th>';widths.forEach(function(w){r+='<td class="'+(anchors[w]?'anchor':'')+'">'+r1(evaluate(a,b,w))+'</td>';});return r+'</tr>';}
+  var A={360:true,1440:true};
+  var cw=[360,480,768,1440,1920];
+  document.getElementById('capTable').innerHTML='<caption>b within 1.33× (holds) vs b beyond 1.33× (glides). Rendered px.</caption>'+head(cw,A)+'<tbody>'+row('Reach early, hold','[12,14]',12,14,cw,A)+row('Glide all the way','[12,20]',12,20,cw,A)+'</tbody>';
+  document.getElementById('invTable').innerHTML='<caption>Rendered px — glides down from 360 to 1440.</caption>'+head(cw,A)+'<tbody>'+row('Mobile larger','[16,12]',16,12,cw,A)+'</tbody>';
+  var ew=[360,480,768,1024,1440,1920];
+  var groups=[
+    {kind:'Type',items:[{label:'Caption / label',a:12,b:12},{label:'Product title',a:14,b:16},{label:'Section heading',a:24,b:40}]},
+    {kind:'Spacing',items:[{label:'Section padding',a:16,b:24},{label:'Card gap',a:8,b:12}]},
+    {kind:'Dimensions',items:[{label:'Card width',a:280,b:480}]}
+  ];
+  var et=head(ew,A)+'<tbody>';
+  groups.forEach(function(g){et+='<tr class="grp"><th colspan="'+(ew.length+1)+'">'+g.kind+'</th></tr>';g.items.forEach(function(x){et+=row(x.label,'['+x.a+','+x.b+']',x.a,x.b,ew,A);});});
+  document.getElementById('exTable').innerHTML='<caption>Rendered size (px) at representative screen widths.</caption>'+et+'</tbody>';
+})();
+</script>
+</body>
+</html>

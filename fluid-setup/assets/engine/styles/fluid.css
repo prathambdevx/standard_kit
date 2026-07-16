@@ -1,0 +1,29 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   Fluid system foundation — MERGE THIS INTO YOUR globals.css (Tailwind v4 entry).
+   The fl-* utilities are self-contained: the plugin + scripts/fluid-math.mjs bake
+   the anchor constants (360 / 1440 / 1920) directly into every emitted clamp()/
+   min()/max() expression, so there is NO :root token block to maintain — only
+   the @plugin import below is required. The page-cap utility is optional.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* 1) REQUIRED — register the plugin, right after `@import "tailwindcss";`.
+   The path is relative to THIS globals.css file. Adjust it to point at where
+   fluid-setup placed tailwind-plugins/fluid.js:
+     globals.css at src/styles/  →  "../../tailwind-plugins/fluid.js"
+     globals.css at src/app/     →  "../../tailwind-plugins/fluid.js"
+   (the setup skill computes and fills this in). */
+@plugin "../../tailwind-plugins/fluid.js";
+
+/* 2) OPTIONAL — page cap. Content stops growing and centers at --page-max on
+   large screens; full-bleed background bands can still break out of it. Wrap
+   page content in the `page-cap` utility (or apply it in your root layout).
+   Set --page-max to the width you want the canvas to freeze at (1920 fills a
+   Full-HD screen edge-to-edge). Delete this block if you don't want a cap. */
+:root {
+  --page-max: 1920px;
+}
+
+@utility page-cap {
+  max-width: var(--page-max);
+  margin-inline: auto;
+}

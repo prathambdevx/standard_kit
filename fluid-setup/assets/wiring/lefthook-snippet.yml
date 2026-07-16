@@ -1,0 +1,15 @@
+# Fluid commit gates — merge these into your lefthook.yml `pre-commit.commands`.
+# They run the validator against staged files so a malformed / WCAG-violating /
+# over-growing fl-* token can never be committed. Adjust the globs to your paths
+# (these assume the web app lives at apps/web; for a single-package repo drop the
+# `apps/web/` prefix and the `cd apps/web &&`).
+#
+# If you don't use lefthook, wire the same command into whatever pre-commit / CI
+# runner you have — the important thing is `bun scripts/check-fluid.mjs <files>`
+# runs on every change to component/plugin source.
+
+pre-commit:
+  commands:
+    fluid:
+      glob: "apps/web/{src,tailwind-plugins}/**/*.{ts,tsx,js,mjs,css}"
+      run: bun apps/web/scripts/check-fluid.mjs {staged_files}
