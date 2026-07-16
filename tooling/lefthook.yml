@@ -1,0 +1,31 @@
+pre-commit:
+  parallel: true
+  commands:
+    biome:
+      glob: "*.{js,ts,tsx,jsx,json,jsonc}"
+      run: bunx --no -- biome check --write --no-errors-on-unmatched {staged_files}
+      stage_fixed: true
+    typecheck:
+      glob: "*.{ts,tsx}"
+      run: bun run typecheck
+    depcruise:
+      glob: "apps/web/src/**/*.{ts,tsx}"
+      run: cd apps/web && bunx --no -- depcruise src
+    fluid-tokens:
+      glob: "apps/web/src/**/*.{css,ts,tsx}"
+      run: cd apps/web && bun run check:fluid
+    fluid-v2:
+      glob: "apps/web/{src,tailwind-plugins}/**/*.{ts,tsx,js,mjs,css}"
+      run: bun apps/web/scripts/check-fluid-v2.mjs {staged_files}
+    fluid-regression:
+      run: bash apps/web/scripts/check-fluid-regression.sh
+
+# No pre-push hook: build + tests are CI's job (slow checks don't belong in the
+# local push path), and the Claude token sync is a manual maintenance command
+# (`bun run sync-token`) — run it only when CI's Claude auth fails (token rotated),
+# not on every push.
+
+commit-msg:
+  commands:
+    commitlint:
+      run: bunx --no -- commitlint --edit {1}

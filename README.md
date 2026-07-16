@@ -1,26 +1,24 @@
 # standard_kit
 
-A personal collection of reusable, drop-in kits for new projects. Each top-level folder is a
-self-contained kit you can copy into a project and run.
+My personal, reusable starter kit for new projects — the skills, Claude Code rules, git hooks, and
+tooling configs I always want in place, packaged so I can drop them into any new repo instead of
+rebuilding them from scratch each time.
 
-## Kits
+**Usage:** copy whichever folder(s) you need into a new project's `.claude/` (skills → `.claude/skills/`,
+rules → `.claude/rules/`, hooks → `.claude/hooks/` + wire into `.claude/settings.json`), or point Claude
+at this repo and say **"here's my kit, set it up."** Each folder's own `README.md` covers exactly what to
+copy where and what to adapt for the new project's actual shape — paths, atom names, branch/scope
+conventions differ per repo, but the underlying rules and workflow don't.
 
-### `fluid-setup/` — fluid (`fl-*`) responsive scaling system
+## What's in here
 
-A one-time installer for a complete fluid-scaling system on Tailwind v4. Author any size/spacing/font
-as two design numbers — `fl-text-[14,16]`, `fl-p-[16,24]`, `fl-gap-[8,12]` — and it glides smoothly
-from a 360px design width to a 1440px one, then damps to a ×1.167 ceiling at 1920 and freezes. No
-breakpoint jumps.
+| Folder | What it sets up |
+|---|---|
+| **`git-workflow/`** | Commit + PR skills — platform-scoped Conventional Commits, workspace-aware splitting, PR template filling |
+| **`tooling/`** | Lint/format/commit-gate baseline — Biome config, lefthook (pre-commit + commit-msg), commitlint |
+| **`comments/`** | Comment-style rules (frontend + backend) + a hook that reminds the model of them right after every edit |
+| **`build-page/`** | Page/component generation skills from a CSS dump or Figma MCP URL, plus the spacing-decision rule they depend on |
+| **`image-optimization/`** | Next.js image audit skill — correct width/height/sizes/quality/priority, with a savings-estimate report format |
+| **`fluid-setup/`** | One-time installer for a fluid (`fl-*`) responsive-scaling system on Tailwind v4 — replaces breakpoint-stepped sizes with two-anchor values that glide smoothly between a mobile and desktop design width |
 
-**Use it:**
-1. Copy `fluid-setup/` into a project's `.claude/skills/`.
-2. Tell Claude **"set up fluid"** (or run `/fluid-setup`) — it installs the plugin, math module,
-   validator, `cn.ts` wiring, globals foundation, commit gate, and the `fluidize` conversion skill.
-3. Then say **"fluidize &lt;page/component&gt;"** to convert existing UI, or author new UI with `fl-*`.
-
-See `fluid-setup/README.md` for details, and open `fluid-setup/assets/docs/fluid-scaling.html` in a
-browser for an interactive demo of the model.
-
----
-
-_More standard kits to come._
+More kits get added here over time as they prove themselves on real projects.

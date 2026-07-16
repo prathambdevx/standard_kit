@@ -1,0 +1,131 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.16/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": false,
+    "includes": [
+      "**",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/build",
+      "!**/.output",
+      "!**/.next",
+      "!**/.turbo",
+      "!**/prisma/migrations",
+      "!**/__generated__",
+      "!**/generated",
+      "!packages/types/src/shopify/schema.ts",
+      "!packages/types/src/shopify/operations.ts",
+      "!packages/types/src/shopify/admin-schema.ts",
+      "!packages/types/src/shopify/admin-operations.ts",
+      "!packages/types/src/strapi/schema.ts",
+      "!packages/types/src/strapi/operations.ts",
+      "!**/codegen/schemas",
+      "!**/next-env.d.ts",
+      "!**/*.css",
+      "!**/*.html",
+      "!apps/admin-ui/**/*.cjs",
+      "!docs",
+      "!apps/web/docs",
+      "!apps/admin-ui/docs",
+      "!sst.config.ts",
+      "!**/.sst",
+      "!**/.open-next"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": { "level": "on" }
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "style": {
+        "noNonNullAssertion": "warn",
+        "useImportType": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "warn"
+      },
+      "nursery": {
+        "useSortedClasses": "off"
+      }
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "semicolons": "always",
+      "trailingCommas": "all",
+      "arrowParentheses": "always"
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["apps/admin-ui/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noNonNullAssertion": "off"
+          },
+          "suspicious": {
+            "noArrayIndexKey": "off",
+            "noExplicitAny": "off",
+            "useIterableCallbackReturn": "off"
+          },
+          "correctness": {
+            "useExhaustiveDependencies": "off",
+            "useJsxKeyInIterable": "off"
+          },
+          "a11y": {
+            "noSvgWithoutTitle": "off",
+            "noRedundantAlt": "off",
+            "noStaticElementInteractions": "off",
+            "useKeyWithClickEvents": "off",
+            "useButtonType": "off",
+            "useFocusableInteractive": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["apps/web/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@/modules": "Import from a specific module's public index, e.g. '@/modules/pdp'.",
+                  "@/app": "The app/ layer is routing-only and cannot be imported."
+                }
+              }
+            }
+          },
+          "suspicious": {
+            "noArrayIndexKey": "warn"
+          },
+          "security": {
+            "noDangerouslySetInnerHtml": "warn"
+          }
+        }
+      }
+    }
+  ]
+}
