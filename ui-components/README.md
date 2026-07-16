@@ -75,6 +75,11 @@ with the math.
   unchanged for `delayMs` (default 300). Keeps an input instant while throttling an expensive
   downstream effect — a search box's own text stays responsive while the network request/filter
   pass it triggers only fires once typing pauses.
+- **`useMediaQuery.ts`** — a live boolean for whether a CSS media query currently matches, via
+  `window.matchMedia` + its `change` event (re-renders the component when the viewport crosses the
+  breakpoint, not just a one-time check on mount). Reach for this when a breakpoint decision has to
+  happen in JS logic (different copy/text per breakpoint, conditionally mounting a component,
+  choosing an image size) — not for anything expressible as a plain Tailwind `md:`/`lg:` class.
 
 ### `components/transitions/` — reusable animation wrappers, one per file
 

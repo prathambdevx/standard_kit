@@ -19,7 +19,8 @@ conventions differ per repo, but the underlying rules and workflow don't.
 | **`comments/`** | Comment-style rules (frontend + backend) + a hook that reminds the model of them right after every edit |
 | **`build-page/`** | Page/component generation skills from a CSS dump or Figma MCP URL, plus the spacing-decision rule they depend on |
 | **`image-optimization/`** | Next.js image audit skill — correct width/height/sizes/quality/priority, with a savings-estimate report format |
-| **`web-conventions/`** | React/Next.js engineering skills — layout-thrashing fixes, state-management decision tree, perf rule pass, hook conventions, 39 react-best-practices rules, App Router patterns |
+| **`web-conventions/`** | React/Next.js engineering skills — layout-thrashing fixes, state-management decision tree, perf rule pass, hook conventions, 39 react-best-practices rules, App Router patterns, utils-vs-lib placement decision tree |
+| **`qa-fix/`** | Visual QA across the standard breakpoint set + a bounded fix→re-QA loop, with a running learnings log |
 | **`ui-components/`** | A production atom library (Button/Img/Picture/Alink + accordion/drawer/select/media/video/carousel/…), animation wrappers + motion tokens, scroll-restoration/view-transition helpers, TanStack Query wrapper hooks + provider, string/time/phone utils, and a reusable area-accurate SVG-fill math utility |
 | **`ios-safari-fixes/`** | 6 recurring iOS Safari rendering bugs (SVG clipping, `w-auto` cropping, input auto-zoom, `dvh` viewport jump, scroll-lock, safe-area double-stacking) — a skill doc with real before/after fixes + a static validator that catches 4 of them mechanically |
 | **`fluid-setup/`** | One-time installer for a fluid (`fl-*`) responsive-scaling system on Tailwind v4 — replaces breakpoint-stepped sizes with two-anchor values that glide smoothly between a mobile and desktop design width |

@@ -11,6 +11,7 @@ of these (verified before including).
 | `hooks/` | Hook categories (store wrapper / query base / data-fetching / domain), naming conventions, import-layer rules, `"use client"` placement. 4 sub-rules: global-vs-local, store-wrapper-pattern, tanstack-query-wrapper, domain-hooks |
 | `react-best-practices/` | 39 granular rules across rendering, re-renders, async, bundle size, and raw-JS micro-optimizations (each its own file — early-exit, memo, lazy state init, transitions, dynamic imports, barrel-import avoidance, etc.) |
 | `nextjs-app-router-patterns/` | Server/Client Component boundary, Server Actions, parallel + intercepting routes, streaming with Suspense, route handlers, metadata/SEO, caching strategies (`cache`, `revalidate`, `tags`) |
+| `utils/` | Decision tree for where a non-component helper belongs — `utils/` (pure functions only: no fetch/SDK/store/React) vs `lib/` (third-party wrappers, configured instances, cross-cutting stores) vs a feature module vs `hooks/`/`services/`. Includes a genuinely general architectural principle: in a multi-client app (web + mobile off the same backend), a display-normalization transform belongs in the *backend response mapper*, not a per-client util — shape once, both clients render as-is. |
 
 ## A note on `state-management` — verified, not stale
 
@@ -35,5 +36,10 @@ category/naming/import-layer guidance, which is what's actually reusable.
   package name (or delete that tier if there isn't one).
 - `hooks` / hook-naming examples (`useCustomer`, `useCart`, `useShopifyProducts`) are illustrative
   names showing the *pattern* (`use{StoreName}`, `use{Resource}`) — not literal files to expect.
+- `utils`: the decision *tree* (utils vs lib vs module vs hooks) is the reusable core; its example
+  file lists (`formatInr`, `stripGid`, `plp_columns.ts`, `lib/drawers.ts`, `lib/commerce.ts`) are
+  the source project's actual files — some are in this kit's `ui-components/utils/` (`format.ts`,
+  `html.ts`, `bot.ts`), most aren't (Shopify/PLP-specific), so treat the examples as illustration
+  of the *pattern*, not a manifest of what's bundled here.
 - The rest (`layout-thrashing`, `fix-performance`, `react-best-practices`,
   `nextjs-app-router-patterns`) are framework-level and need no adaptation.
