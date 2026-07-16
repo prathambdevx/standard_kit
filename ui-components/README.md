@@ -34,6 +34,7 @@ workaround (a raw `<button className="...">`, a bare `<a>`, a hand-rolled `<img>
 | `field_error.tsx` | Small inline form-error message atom |
 | `media.tsx` | Polymorphic image-or-video renderer (checks `isVideoUrl`, renders `<Img>` or `<Vid>` accordingly) |
 | `select.tsx` | Radix select wrapper |
+| `date_picker.tsx` | Radix popover + `react-day-picker` calendar — single-date select, min/max disabled-range, custom chevron icons, YYYY-MM-DD in/out with local-timezone-safe parsing (no UTC-shift-by-one-day bugs) |
 | `video.tsx` | Custom video player — play/pause/mute controls, custom icons |
 | `hover_zoom_image.tsx` | Wraps an `Img`/`Picture` to scale up slightly on hover (pairs with a `group` class on the parent) |
 | `star_rating.tsx` | Interactive star picker (hover preview, controlled value) |
@@ -167,6 +168,7 @@ correct the naive linear clip) is the reusable part, not just this specific star
   file — just enough for `media.tsx`/`video.tsx` to resolve. Add your own project's other helpers
   alongside it.
 - **Peer dependencies**: `@radix-ui/react-accordion`, `@radix-ui/react-dialog`, `@radix-ui/react-select`,
+  `@radix-ui/react-popover` + `react-day-picker` (for `date_picker.tsx`),
   `embla-carousel` + `embla-carousel-react` + `embla-carousel-autoplay`, `clsx` + `tailwind-merge` (via
   `cn` — see the `fluid-setup` kit's `cn.ts` if you don't have one), `next` (Image/Link), `react-dom`
   (for `Picture`'s `preload()` and `view_transition.ts`'s `flushSync`), `lenis` (for `SmoothScroll`),
