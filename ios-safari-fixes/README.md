@@ -1,21 +1,23 @@
 # ios-safari-fixes
 
-Six recurring iOS Safari rendering bugs — each one learned from a real bug that shipped, only
+Seven recurring iOS Safari rendering bugs — each one learned from a real bug that shipped, only
 surfaced on a physical iPhone (never reproduced in Chrome DevTools' device emulation), and had to
 be fixed after the fact. Bake these in while writing the code instead of waiting for iPhone QA.
 
 ## What's in here
 
-- **`SKILL.md`** — the 6 rules with real before/after code from the actual fix commits: SVG
+- **`SKILL.md`** — the 7 rules with real before/after code from the actual fix commits: SVG
   viewBox clipping, `w-auto` ignoring hardcoded SVG width/height attributes, sub-16px input
   auto-zoom, `dvh` resizing with the URL bar (use `svh`), `overflow:hidden` not locking scroll on
-  iOS (needs `position:fixed`), and `safe-area-inset-bottom` double-stacking.
+  iOS (needs `position:fixed`), `safe-area-inset-bottom` double-stacking, and SVGs flickering next
+  to a height/layout animation (promote with `transform-gpu backface-hidden`).
+- **`ISSUES.md`** — a plain running log of iOS-only bugs as they surface; add a bullet each time.
 - **`css/ios-safari.css`** — the one global CSS fix (rule 1): `svg { overflow: visible }` in
   `@layer base`.
 - **`scripts/check-ios-safari.mjs`** + **`.test.mjs`** — a new static validator (14 tests) that
-  mechanically catches 4 of the 6 rules (SVG auto-size, input zoom, dvh usage as an info-level
-  nudge, safe-area double-stacking). Rules 1 and 5 are a one-time CSS change and a shared hook
-  respectively — nothing left to lint once they're in place.
+  mechanically catches 4 of the 7 rules (SVG auto-size, input zoom, dvh usage as an info-level
+  nudge, safe-area double-stacking). Rules 1, 5, and 7 are a one-time CSS change, a shared hook, and
+  a by-eye adjacency call respectively — nothing left to lint once they're in place.
 
 ## Install in a new project
 

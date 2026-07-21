@@ -1,6 +1,6 @@
 ---
 name: ios-safari-fixes
-description: iOS Safari renders web UI differently from every other engine in a handful of specific, recurring ways — SVG clipping, viewport-height units, input auto-zoom, scroll-lock, safe-area insets. Apply these rules proactively while writing any component with an SVG, a text input, a full-viewport element, a bottom-fixed bar, or a scroll-locking overlay, so the bug never ships instead of getting caught in iPhone QA later.
+description: iOS Safari renders web UI differently from every other engine in a handful of specific, recurring ways — SVG clipping, viewport-height units, input auto-zoom, scroll-lock, safe-area insets, compositing-layer flicker. Apply these rules proactively while writing any component with an SVG, a text input, a full-viewport element, a bottom-fixed bar, a scroll-locking overlay, or an element sitting next to a height/layout animation, so the bug never ships instead of getting caught in iPhone QA later.
 user-invocable: false
 ---
 
@@ -146,6 +146,36 @@ twice, over-padding the bar on notched iPhones (extra dead space above the home 
 `safe-area-inset-bottom` — but exactly once per element chain.** Before adding it, check whether
 a parent or child in the same stack already does.
 
+## 7. SVGs (or any static element) flicker next to a height/layout animation
+
+**The bug:** an accordion, collapsible, or `max-height` reveal animates the CSS `height` property.
+`height` isn't GPU-composited, so every frame forces iOS Safari to re-layout **and repaint**
+everything that shifts below the animating element. Any SVGs caught in that repaint path — a row of
+payment icons directly under a footer FAQ accordion, say — get repainted on a non-composited layer
+each frame and visibly flicker. Chrome and Firefox composite/paint here differently and don't show
+it, so it's iOS-only and never reproduces in device emulation.
+
+```tsx
+// ❌ the payment-icon row flickers every time the accordion above it opens/closes
+<div className="flex items-center justify-between gap-4">
+  <VisaIcon /> <MastercardIcon /> {/* … */}
+</div>
+
+// ✅ pin the row to its own compositing layer — iOS paints it once, then just
+// translates the layer as the accordion animates (no per-frame SVG repaint)
+<div className="flex transform-gpu items-center justify-between gap-4 backface-hidden">
+  <VisaIcon /> <MastercardIcon /> {/* … */}
+</div>
+```
+
+`transform-gpu` → `transform: translateZ(0)` (forces the compositing layer); `backface-hidden` →
+`backface-visibility: hidden` (the WebKit repaint stabilizer). **Rule: when a static element —
+especially one containing SVGs — sits adjacent to a sibling that animates `height`/`max-height` or
+any layout property, promote that static element with `transform-gpu backface-hidden`.** Prefer
+fixing the flickering neighbour over the animation itself; the layer promotion has no layout effect
+and is safe to leave on. (Not a lint rule — the adjacency is contextual; apply it by eye when you
+build the animating layout.)
+
 ## The validator (`scripts/check-ios-safari.mjs`)
 
 Run `bun scripts/check-ios-safari.mjs` (or point it at specific files) to catch rules 2, 3, 4, and
@@ -164,7 +194,7 @@ to scan for once they're in place.
 
 ## Why "test on a real device" isn't a substitute for these rules
 
-None of the 6 bugs above reproduce in Chrome DevTools' iOS device emulation — device emulation
+None of the 7 bugs above reproduce in Chrome DevTools' iOS device emulation — device emulation
 simulates viewport size and touch events, not the actual WebKit rendering quirks (SVG UA
 clipping, `w-auto` attribute precedence, the URL-bar-driven `dvh` resize, `overflow:hidden`
 touch-drag behavior). They only ever surfaced on a physical iPhone in QA, after the code had
