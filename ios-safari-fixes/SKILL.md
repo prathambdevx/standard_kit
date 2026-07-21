@@ -1,14 +1,15 @@
 ---
 name: ios-safari-fixes
-description: iOS Safari renders web UI differently from every other engine in a handful of specific, recurring ways — SVG clipping, viewport-height units, input auto-zoom, scroll-lock, safe-area insets, compositing-layer flicker. Apply these rules proactively while writing any component with an SVG, a text input, a full-viewport element, a bottom-fixed bar, a scroll-locking overlay, or an element sitting next to a height/layout animation, so the bug never ships instead of getting caught in iPhone QA later.
+description: iOS Safari renders web UI differently from every other engine in a handful of specific, recurring ways — SVG clipping, viewport-height units, input auto-zoom, scroll-lock, safe-area insets, plus a repaint-shimmer precaution. Apply these rules proactively while writing any component with an SVG, a text input, a full-viewport element, a bottom-fixed bar, a scroll-locking overlay, or SVGs next to a continuously-repainting region, so the bug never ships instead of getting caught in iPhone QA later.
 user-invocable: false
 ---
 
 # iOS Safari fixes — bake these in, don't wait for QA to find them
 
-Every rule below was learned from a real bug that shipped, got caught on a physical iPhone (never
-reproduced in Chrome DevTools' device emulation), and had to be fixed after the fact. Apply them
-while writing the code so there's nothing to catch later.
+Rules 1–6 were each learned from a real bug that shipped, got caught on a physical iPhone (never
+reproduced in Chrome DevTools' device emulation), and had to be fixed after the fact. Rule 7 is a
+general repaint precaution, not a confirmed shipped bug (see its note). Apply them while writing the
+code so there's nothing to catch later.
 
 ## 1. SVGs clip their own artwork at the viewBox edge
 
@@ -146,35 +147,36 @@ twice, over-padding the bar on notched iPhones (extra dead space above the home 
 `safe-area-inset-bottom` — but exactly once per element chain.** Before adding it, check whether
 a parent or child in the same stack already does.
 
-## 7. SVGs (or any static element) flicker next to a height/layout animation
+## 7. SVGs shimmering in place next to a repainting region (general precaution)
 
-**The bug:** an accordion, collapsible, or `max-height` reveal animates the CSS `height` property.
-`height` isn't GPU-composited, so every frame forces iOS Safari to re-layout **and repaint**
-everything that shifts below the animating element. Any SVGs caught in that repaint path — a row of
-payment icons directly under a footer FAQ accordion, say — get repainted on a non-composited layer
-each frame and visibly flicker. Chrome and Firefox composite/paint here differently and don't show
-it, so it's iOS-only and never reproduces in device emulation.
+> Unlike rules 1–6, this one is **not** from a confirmed shipped bug — it's a general iOS-Safari
+> repaint behavior worth guarding against. It was first suspected behind a footer "payment icons
+> flicker" report, but that turned out to be a **layout/scroll jerk**, not a repaint (see the
+> "footer FAQ accordion" entry in `ISSUES.md`). Keep this rule for the genuine repaint case; don't
+> reach for it when the whole element is *changing position*.
+
+**The behavior:** when a nearby region repaints continuously (a canvas, a CSS-filter/backdrop
+animation, an element animating a non-composited property), iOS Safari can repaint adjacent
+static content — SVGs especially — on the same non-composited pass, making them *shimmer in place*.
+Chrome/Firefox composite differently and don't show it, so it's iOS-only and invisible in emulation.
+
+**Fix — pin the static content to its own compositing layer** so iOS paints it once and leaves it
+alone:
 
 ```tsx
-// ❌ the payment-icon row flickers every time the accordion above it opens/closes
-<div className="flex items-center justify-between gap-4">
-  <VisaIcon /> <MastercardIcon /> {/* … */}
-</div>
-
-// ✅ pin the row to its own compositing layer — iOS paints it once, then just
-// translates the layer as the accordion animates (no per-frame SVG repaint)
-<div className="flex transform-gpu items-center justify-between gap-4 backface-hidden">
-  <VisaIcon /> <MastercardIcon /> {/* … */}
+// ✅ transform-gpu → transform: translateZ(0) (forces a compositing layer)
+//    backface-hidden → backface-visibility: hidden (WebKit repaint stabilizer)
+<div className="flex transform-gpu items-center gap-4 backface-hidden">
+  <SomeIcon /> {/* … */}
 </div>
 ```
 
-`transform-gpu` → `transform: translateZ(0)` (forces the compositing layer); `backface-hidden` →
-`backface-visibility: hidden` (the WebKit repaint stabilizer). **Rule: when a static element —
-especially one containing SVGs — sits adjacent to a sibling that animates `height`/`max-height` or
-any layout property, promote that static element with `transform-gpu backface-hidden`.** Prefer
-fixing the flickering neighbour over the animation itself; the layer promotion has no layout effect
-and is safe to leave on. (Not a lint rule — the adjacency is contextual; apply it by eye when you
-build the animating layout.)
+The promotion has no layout effect and is safe to leave on. (Not a lint rule — apply by eye.)
+
+**Do NOT use this for a vertical jerk.** If the element *moves/jumps* rather than shimmering in a
+fixed spot, the cause is a reflow or scroll re-clamp (e.g. a `height`-animating accordion changing
+document height while scrolled to the bottom), not a repaint — layer promotion won't touch it. That
+class of bug lives in `ISSUES.md`.
 
 ## The validator (`scripts/check-ios-safari.mjs`)
 
@@ -194,7 +196,7 @@ to scan for once they're in place.
 
 ## Why "test on a real device" isn't a substitute for these rules
 
-None of the 7 bugs above reproduce in Chrome DevTools' iOS device emulation — device emulation
+None of the rules above reproduce in Chrome DevTools' iOS device emulation — device emulation
 simulates viewport size and touch events, not the actual WebKit rendering quirks (SVG UA
 clipping, `w-auto` attribute precedence, the URL-bar-driven `dvh` resize, `overflow:hidden`
 touch-drag behavior). They only ever surfaced on a physical iPhone in QA, after the code had
