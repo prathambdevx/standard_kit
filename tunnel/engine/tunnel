@@ -1,0 +1,319 @@
+#!/usr/bin/env bash
+# tunnel — generic multi-service local-dev + Cloudflare-tunnel orchestrator.
+#
+# This script has ZERO project-specific knowledge. Everything project-specific
+# (which services exist, how to build/start them, what to do once tunnel URLs
+# are known) lives in a per-project config file, found in this order:
+#   1. $TUNNEL_CONFIG (explicit path)
+#   2. ./.tunnel.config.sh   (in the directory you run `tunnel` from)
+#   3. ~/.config/tunnel/<basename of that directory>.sh
+#
+# Usage:
+#   tunnel start      # stop everything, start all services + tunnels, run post-hook
+#   tunnel restart     # same as start
+#   tunnel stop        # stop all services + tunnels
+#
+# ---- Config file contract -------------------------------------------------
+#
+#   SERVICES=(name1 name2 ...)             # order matters — started in this order
+#
+#   For each name in SERVICES, define:
+#     <name>_port=NNNN                     # required — port the service listens on
+#     <name>_start_cmd="..."               # required — command to start it
+#     <name>_build_cmd="..."               # optional — run once before starting
+#     <name>_ready_pattern="regex"          # optional — grep pattern in its log
+#                                           #   signaling "ready" (else just waits
+#                                           #   for the port to open)
+#     <name>_kill_pattern="pattern"         # optional — extra `pkill -f` pattern
+#                                           #   used on stop/restart (besides the
+#                                           #   port-based kill, which always runs)
+#
+#   Optional hook, called once after every service is running and tunneled:
+#     post_tunnel_hook() { ... }
+#
+#   Inside the config and the hook, these are available:
+#     $TUNNEL_PROJECT_DIR                  # the directory `tunnel` was run from
+#     $TUNNEL_URL_<NAME>                   # public tunnel URL for each service
+#                                           #   (NAME uppercased, non-alnum -> _)
+#   And these helper functions:
+#     run_build <name>                     # (re)run <name>_build_cmd if set
+#     restart_service <name>                # kill + restart <name> (tunnel untouched)
+#
+# -----------------------------------------------------------------------------
+
+set -uo pipefail
+
+TUNNEL_PROJECT_DIR="$(pwd)"
+export TUNNEL_PROJECT_DIR
+
+find_config() {
+  if [ -n "${TUNNEL_CONFIG:-}" ]; then
+    echo "$TUNNEL_CONFIG"
+    return
+  fi
+  if [ -f "$TUNNEL_PROJECT_DIR/.tunnel.config.sh" ]; then
+    echo "$TUNNEL_PROJECT_DIR/.tunnel.config.sh"
+    return
+  fi
+  local by_name="$HOME/.config/tunnel/$(basename "$TUNNEL_PROJECT_DIR").sh"
+  if [ -f "$by_name" ]; then
+    echo "$by_name"
+    return
+  fi
+  echo ""
+}
+
+CONFIG_FILE="$(find_config)"
+if [ -z "$CONFIG_FILE" ]; then
+  cat >&2 <<EOF
+No tunnel config found for this directory ($TUNNEL_PROJECT_DIR).
+
+Looked for, in order:
+  \$TUNNEL_CONFIG
+  ./.tunnel.config.sh
+  ~/.config/tunnel/$(basename "$TUNNEL_PROJECT_DIR").sh
+
+Create one of those (see the header of $0 for the config contract) and try again.
+EOF
+  exit 1
+fi
+
+SLUG="$(basename "$TUNNEL_PROJECT_DIR")"
+LOG_DIR="/tmp/tunnel/$SLUG"
+mkdir -p "$LOG_DIR"
+
+log() { echo "→ $*"; }
+
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
+
+if [ "${#SERVICES[@]:-0}" -eq 0 ]; then
+  echo "Config $CONFIG_FILE defines no SERVICES array." >&2
+  exit 1
+fi
+
+# Convenience defaults for the common two-service "web" + "bff" shape — only
+# applied when a service is literally named "web" or "bff" and its config
+# didn't set <name>_port itself. Any other service name always requires an
+# explicit port.
+for name in "${SERVICES[@]}"; do
+  port_var="${name}_port"
+  if [ -z "${!port_var:-}" ]; then
+    case "$name" in
+      web) export "$port_var=3000" ;;
+      bff) export "$port_var=4000" ;;
+      *)
+        echo "Service '$name' has no ${name}_port set in $CONFIG_FILE (only 'web'/'bff' get a default)." >&2
+        exit 1
+        ;;
+    esac
+  fi
+done
+
+kill_port() {
+  local port="$1"
+  local pids
+  pids="$(lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null || true)"
+  if [ -n "$pids" ]; then
+    kill -9 $pids 2>/dev/null || true
+  fi
+}
+
+kill_service() {
+  local name="$1"
+  local port_var="${name}_port"
+  local kill_pattern_var="${name}_kill_pattern"
+  local pattern="${!kill_pattern_var:-}"
+  if [ -n "$pattern" ]; then
+    pkill -f "$pattern" 2>/dev/null || true
+  fi
+  kill_port "${!port_var}"
+}
+
+kill_tunnel_for() {
+  local port="$1"
+  pkill -f "cloudflared tunnel --url http://localhost:$port" 2>/dev/null || true
+}
+
+wait_for_port() {
+  local port="$1" timeout="${2:-30}" waited=0
+  while ! lsof -i "tcp:$port" -sTCP:LISTEN >/dev/null 2>&1; do
+    sleep 0.5
+    waited=$((waited + 1))
+    if [ "$waited" -ge $((timeout * 2)) ]; then
+      echo "Timed out waiting for port $port to open" >&2
+      return 1
+    fi
+  done
+}
+
+wait_for_log_pattern() {
+  local file="$1" pattern="$2" timeout="${3:-30}" waited=0
+  while ! grep -qE "$pattern" "$file" 2>/dev/null; do
+    sleep 0.5
+    waited=$((waited + 1))
+    if [ "$waited" -ge $((timeout * 2)) ]; then
+      echo "Timed out waiting for '$pattern' in $file" >&2
+      tail -30 "$file" >&2 || true
+      return 1
+    fi
+  done
+}
+
+extract_tunnel_url() {
+  grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" "$1" 2>/dev/null | head -1
+}
+
+env_name_for() {
+  # e.g. "web" -> TUNNEL_URL_WEB, "my-service" -> TUNNEL_URL_MY_SERVICE
+  echo "TUNNEL_URL_$(echo "$1" | tr '[:lower:]-' '[:upper:]_')"
+}
+
+run_build() {
+  local name="$1"
+  local build_var="${name}_build_cmd"
+  local cmd="${!build_var:-}"
+  if [ -n "$cmd" ]; then
+    log "Building $name"
+    eval "$cmd" > "$LOG_DIR/$name.build.log" 2>&1
+  fi
+}
+
+start_service() {
+  local name="$1"
+  local start_var="${name}_start_cmd" port_var="${name}_port" ready_var="${name}_ready_pattern"
+  local cmd="${!start_var}" port="${!port_var}" ready="${!ready_var:-}"
+  log "Starting $name on :$port"
+  : > "$LOG_DIR/$name.log"
+  eval "$cmd" > "$LOG_DIR/$name.log" 2>&1 &
+  if [ -n "$ready" ]; then
+    wait_for_log_pattern "$LOG_DIR/$name.log" "$ready" 30 || exit 1
+  else
+    wait_for_port "$port" 30 || exit 1
+  fi
+}
+
+restart_service() {
+  local name="$1"
+  log "Restarting $name"
+  kill_service "$name"
+  sleep 1
+  start_service "$name"
+}
+
+tunnel_service() {
+  local name="$1"
+  local port_var="${name}_port"
+  local port="${!port_var}"
+  local cf_log="$LOG_DIR/$name.tunnel.log"
+  log "Opening tunnel for $name (:$port)"
+  : > "$cf_log"
+  cloudflared tunnel --url "http://localhost:$port" > "$cf_log" 2>&1 &
+  wait_for_log_pattern "$cf_log" "https://[a-z0-9-]+\.trycloudflare\.com" 20 || exit 1
+  local url
+  url="$(extract_tunnel_url "$cf_log")"
+  local var_name
+  var_name="$(env_name_for "$name")"
+  export "$var_name=$url"
+  log "$name tunnel: $url"
+}
+
+do_stop() {
+  log "Stopping all services and tunnels"
+  for name in "${SERVICES[@]}"; do
+    kill_service "$name"
+    local port_var="${name}_port"
+    kill_tunnel_for "${!port_var}"
+  done
+}
+
+tunnel_already_up() {
+  local name="$1"
+  local port_var="${name}_port"
+  local port="${!port_var}"
+  pgrep -f "cloudflared tunnel --url http://localhost:$port" > /dev/null 2>&1
+}
+
+print_summary() {
+  echo ""
+  echo "=================================================="
+  for name in "${SERVICES[@]}"; do
+    var_name="$(env_name_for "$name")"
+    echo " $name: ${!var_name}"
+  done
+  echo "=================================================="
+  echo "Logs: $LOG_DIR"
+}
+
+do_start() {
+  do_stop
+  sleep 1
+
+  for name in "${SERVICES[@]}"; do
+    run_build "$name"
+    start_service "$name"
+    tunnel_service "$name"
+  done
+
+  if declare -f post_tunnel_hook > /dev/null; then
+    log "Running post_tunnel_hook"
+    post_tunnel_hook
+  fi
+
+  print_summary
+}
+
+do_restart() {
+  # Restart the servers but keep existing tunnels alive (same public URLs) —
+  # falls back to a full `start` if any tunnel isn't already running.
+  for name in "${SERVICES[@]}"; do
+    if ! tunnel_already_up "$name"; then
+      log "No existing tunnel for $name — doing a full start instead"
+      do_start
+      return
+    fi
+  done
+
+  for name in "${SERVICES[@]}"; do
+    local cf_log="$LOG_DIR/$name.tunnel.log"
+    local url
+    url="$(extract_tunnel_url "$cf_log")"
+    if [ -z "$url" ]; then
+      log "Couldn't recover $name's tunnel URL from $cf_log — doing a full start instead"
+      do_start
+      return
+    fi
+    local var_name
+    var_name="$(env_name_for "$name")"
+    export "$var_name=$url"
+  done
+
+  for name in "${SERVICES[@]}"; do
+    run_build "$name"
+    restart_service "$name"
+  done
+
+  if declare -f post_tunnel_hook > /dev/null; then
+    log "Running post_tunnel_hook"
+    post_tunnel_hook
+  fi
+
+  print_summary
+}
+
+case "${1:-}" in
+  start)
+    do_start
+    ;;
+  restart)
+    do_restart
+    ;;
+  stop)
+    do_stop
+    log "Stopped."
+    ;;
+  *)
+    echo "Usage: tunnel {start|restart|stop}" >&2
+    exit 1
+    ;;
+esac

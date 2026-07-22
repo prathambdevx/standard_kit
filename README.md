@@ -24,5 +24,6 @@ conventions differ per repo, but the underlying rules and workflow don't.
 | **`ui-components/`** | A production atom library (Button/Img/Picture/Alink + accordion/drawer/select/media/video/carousel/…), animation wrappers + motion tokens, scroll-restoration/view-transition helpers, TanStack Query wrapper hooks + provider, string/time/phone utils, and a reusable area-accurate SVG-fill math utility |
 | **`ios-safari-fixes/`** | 6 recurring iOS Safari rendering bugs (SVG clipping, `w-auto` cropping, input auto-zoom, `dvh` viewport jump, scroll-lock, safe-area double-stacking) — a skill doc with real before/after fixes + a static validator that catches 4 of them mechanically |
 | **`fluid-setup/`** | One-time installer for a fluid (`fl-*`) responsive-scaling system on Tailwind v4 — replaces breakpoint-stepped sizes with two-anchor values that glide smoothly between a mobile and desktop design width |
+| **`tunnel/`** | Generic multi-service local-dev + Cloudflare-tunnel orchestrator (one shared engine, install once) plus a skill that scaffolds each new project's config — handles the production-vs-dev-mode hydration gotcha, build-time env baking, and cross-service URL/CORS wiring automatically |
 
 More kits get added here over time as they prove themselves on real projects.
