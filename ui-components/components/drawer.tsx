@@ -25,7 +25,10 @@ const DrawerOverlay = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Overlay
     ref={ref}
-    className={cn('drawer-overlay fixed inset-0 z-100 bg-black/50', className)}
+    className={cn(
+      'drawer-overlay fixed inset-0 z-100 bg-black/50 [view-transition-name:drawer-overlay]',
+      className,
+    )}
     {...props}
   />
 ));
@@ -56,7 +59,7 @@ const DrawerContent = React.forwardRef<
       <DialogPrimitive.Content
         ref={ref}
         className={cn(
-          'drawer-content bg-surface-alt fixed z-101 flex flex-col',
+          'drawer-content bg-surface-alt fixed z-101 flex flex-col [view-transition-name:drawer-content]',
           // Mobile: bottom sheet
           'inset-x-0 bottom-0 max-h-[80dvh] w-full',
           // Tablet + desktop: right-side panel at 488px

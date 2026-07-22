@@ -79,11 +79,11 @@ export const ScrollArea = ({
         {children}
       </div>
 
-      {/* Persistent thumb — solid dim, 4px, fully rounded (Figma spec); hidden when not scrollable */}
+      {/* Persistent thumb — dim/60, 6px, fully rounded (Figma spec); hidden when not scrollable */}
       <div
-        className={`relative w-1 shrink-0 my-4 ${mobileOnly ? 'lg:hidden ' : ''}${isScrollable ? '' : 'invisible'}`}
+        className={`relative w-1.5 shrink-0 my-4 ${mobileOnly ? 'lg:hidden ' : ''}${isScrollable ? '' : 'invisible'}`}
       >
-        <div ref={thumbRef} className="absolute inset-x-0 rounded-full bg-dim" />
+        <div ref={thumbRef} className="absolute inset-x-0 rounded-full bg-dim/60" />
       </div>
     </div>
   );
