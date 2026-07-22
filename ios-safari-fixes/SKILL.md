@@ -147,13 +147,13 @@ twice, over-padding the bar on notched iPhones (extra dead space above the home 
 `safe-area-inset-bottom` — but exactly once per element chain.** Before adding it, check whether
 a parent or child in the same stack already does.
 
-## 7. SVGs shimmering in place next to a repainting region (general precaution)
+## 7. SVGs shimmering in place next to a repainting region
 
-> Unlike rules 1–6, this one is **not** from a confirmed shipped bug — it's a general iOS-Safari
-> repaint behavior worth guarding against. It was first suspected behind a footer "payment icons
-> flicker" report, but that turned out to be a **layout/scroll jerk**, not a repaint (see the
-> "footer FAQ accordion" entry in `ISSUES.md`). Keep this rule for the genuine repaint case; don't
-> reach for it when the whole element is *changing position*.
+> The footer "payment icons flicker" report that first surfaced this turned out to be **two**
+> separate bugs sharing one ticket: a scroll/layout jerk (fixed separately — see the "footer FAQ
+> accordion" entry in `ISSUES.md`) *and* a genuine SVG repaint shimmer, fixed independently with the
+> `transform-gpu` layer promotion below. Both fixes shipped and both are needed together whenever a
+> bottom bar with icons sits below an animating accordion — don't assume fixing one covers the other.
 
 **The behavior:** when a nearby region repaints continuously (a canvas, a CSS-filter/backdrop
 animation, an element animating a non-composited property), iOS Safari can repaint adjacent

@@ -1,21 +1,21 @@
 # ios-safari-fixes
 
-Six recurring iOS Safari rendering bugs — each one learned from a real bug that shipped, only
+Seven recurring iOS Safari rendering bugs — each one learned from a real bug that shipped, only
 surfaced on a physical iPhone (never reproduced in Chrome DevTools' device emulation), and had to
-be fixed after the fact — plus one general repaint precaution (rule 7). Bake these in while writing
-the code instead of waiting for iPhone QA.
+be fixed after the fact. Bake these in while writing the code instead of waiting for iPhone QA.
 
 ## What's in here
 
-- **`SKILL.md`** — 6 shipped-bug rules with real before/after code from the actual fix commits: SVG
+- **`SKILL.md`** — 7 shipped-bug rules with real before/after code from the actual fix commits: SVG
   viewBox clipping, `w-auto` ignoring hardcoded SVG width/height attributes, sub-16px input
   auto-zoom, `dvh` resizing with the URL bar (use `svh`), `overflow:hidden` not locking scroll on
-  iOS (needs `position:fixed`), `safe-area-inset-bottom` double-stacking — plus rule 7, a general
-  precaution for SVGs shimmering next to a continuously-repainting region (`transform-gpu`), with a
-  note on how to tell it apart from a scroll/layout jerk.
+  iOS (needs `position:fixed`), `safe-area-inset-bottom` double-stacking, and SVGs shimmering next
+  to a continuously-repainting region (`transform-gpu`) — with a note on how to tell that apart from
+  a scroll/layout jerk, since one footer bug report turned out to contain both.
 - **`ISSUES.md`** — a plain running log of iOS-only bugs as they surface; add a bullet each time.
-  Currently: the footer-FAQ vertical jerk (layout/scroll reflow, fix TBD), plus `svh` and
-  safe-area-inset guidance.
+  Currently: the footer-FAQ accordion (which turned out to be two separate bugs — a scroll/layout
+  jerk fixed with a RAF scroll-stabilizer, and an SVG repaint shimmer fixed with `transform-gpu`),
+  plus `svh` and safe-area-inset guidance.
 - **`css/ios-safari.css`** — the one global CSS fix (rule 1): `svg { overflow: visible }` in
   `@layer base`.
 - **`scripts/check-ios-safari.mjs`** + **`.test.mjs`** — a new static validator (14 tests) that
