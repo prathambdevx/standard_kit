@@ -101,10 +101,15 @@ committed.
 
 ```bash
 cd ~/code/whatever-project
-./tunnel/run start      # fresh tunnels — first run, or whenever you want new public URLs
+./tunnel/run start      # idempotent — see below
 ./tunnel/run restart    # same public URLs, servers restarted behind them (rebuilds/re-patches as configured)
 ./tunnel/run stop        # tears everything down
 ```
+
+**`start` is safe to run repeatedly.** If every service is already up (its port bound *and* its tunnel
+alive), it changes nothing and just re-prints the existing links — no restart, no rebuild, no new
+URLs. Only if something's actually not running does it do a full stop-then-start with fresh tunnel
+URLs. So you never have to remember "is it already running?" before typing `start` — it just tells you.
 
 (If you installed the plain `tunnel` command onto your `PATH` per the Install section above, `tunnel
 start` / `restart` / `stop` work identically — `run` is just a thin, self-installing wrapper around the
@@ -114,6 +119,17 @@ Logs (one file per service, plus a `.build.log` and `.tunnel.log` per service) l
 `<project-root>/.tunnel/logs/` — inside the project, so they're visible in your editor's sidebar/search,
 not off in `/tmp`. The engine auto-appends `.tunnel/` to that project's `.gitignore` the first time it
 runs there (creating the file if needed), so none of it ever ends up staged by accident.
+
+Two things the engine does to keep those logs actually readable:
+- **Real-time, not bursty.** Most runtimes fully-buffer stdout the moment it's not a real terminal
+  (which redirecting to a file counts as) — logs would otherwise arrive in delayed chunks instead of
+  as they're emitted. The engine fakes a pseudo-terminal (via `script`) around each service's start
+  command specifically to keep it line-buffered, so `tail -f` on these logs reflects what's actually
+  happening as it happens. (Falls back to plain, possibly-bursty output if run somewhere with no real
+  controlling terminal to fake one from, e.g. CI — it won't hard-fail there.)
+- **Plain text, not ANSI garbage.** Loggers that colorize their terminal output (common — pino,
+  most CLIs) leave raw escape codes in the file when redirected, which render as unreadable noise in
+  an editor. The engine strips them before writing.
 
 ### Config file contract
 

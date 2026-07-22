@@ -177,14 +177,55 @@ env_name_for() {
   echo "TUNNEL_URL_$(echo "$1" | tr '[:lower:]-' '[:upper:]_')"
 }
 
+# Many CLIs/loggers colorize their output with ANSI escape codes when they
+# detect a terminal — great to watch live, unreadable garbage when it ends
+# up as raw bytes in a log file opened in an editor. Strip them so log files
+# are always clean plain text. `-l`/`-u` keep sed itself line-buffered
+# (BSD sed on macOS vs GNU sed elsewhere) so this doesn't reintroduce the
+# bursty-output problem `run_with_pty` exists to fix.
+strip_ansi() {
+  local esc
+  esc="$(printf '\033')"
+  if [ "$(uname)" = "Darwin" ]; then
+    sed -l -E "s/${esc}\[[0-9;]*[a-zA-Z]//g"
+  else
+    sed -u -E "s/${esc}\[[0-9;]*[a-zA-Z]//g"
+  fi
+}
+
 run_build() {
   local name="$1"
   local build_var="${name}_build_cmd"
   local cmd="${!build_var:-}"
   if [ -n "$cmd" ]; then
     log "Building $name"
-    eval "$cmd" > "$LOG_DIR/$name.build.log" 2>&1
+    eval "$cmd" 2>&1 | strip_ansi > "$LOG_DIR/$name.build.log"
   fi
+}
+
+# Most runtimes (Node/Bun included) switch stdout to fully-buffered (instead
+# of line-buffered) the moment it's not a real terminal — which is exactly
+# what happens when we redirect it into a log file. That makes log lines
+# show up in bursts instead of as they're actually emitted. Faking a
+# pseudo-tty via `script` tricks the isatty() check into staying
+# line-buffered, so log-tailing (and wait_for_log_pattern) reflects reality.
+run_with_pty() {
+  local cmd="$1"
+  # `script` needs a real controlling terminal to copy termios settings from
+  # (fails outright with "tcgetattr/ioctl: Operation not supported" otherwise
+  # — e.g. run from CI, a non-interactive script, or certain sandboxes).
+  # Fall back to plain execution there; the only cost is losing the
+  # line-buffering fix in that specific case, not a hard failure.
+  if [ -t 0 ] && command -v script > /dev/null 2>&1; then
+    if [ "$(uname)" = "Darwin" ]; then
+      script -q /dev/null bash -c "$cmd"
+      return
+    else
+      script -qc "$cmd" /dev/null
+      return
+    fi
+  fi
+  eval "$cmd"
 }
 
 start_service() {
@@ -193,7 +234,7 @@ start_service() {
   local cmd="${!start_var}" port="${!port_var}" ready="${!ready_var:-}"
   log "Starting $name on :$port"
   : > "$LOG_DIR/$name.log"
-  eval "$cmd" > "$LOG_DIR/$name.log" 2>&1 &
+  run_with_pty "$cmd" 2>&1 | strip_ansi > "$LOG_DIR/$name.log" &
   if [ -n "$ready" ]; then
     wait_for_log_pattern "$LOG_DIR/$name.log" "$ready" 30 || exit 1
   else
@@ -242,6 +283,37 @@ tunnel_already_up() {
   pgrep -f "cloudflared tunnel --url http://localhost:$port" > /dev/null 2>&1
 }
 
+service_already_up() {
+  local name="$1"
+  local port_var="${name}_port"
+  local port="${!port_var}"
+  lsof -i "tcp:$port" -sTCP:LISTEN > /dev/null 2>&1
+}
+
+everything_already_up() {
+  for name in "${SERVICES[@]}"; do
+    service_already_up "$name" || return 1
+    tunnel_already_up "$name" || return 1
+  done
+  return 0
+}
+
+recover_urls_or_return_1() {
+  # Populates TUNNEL_URL_<NAME> from each service's existing tunnel log.
+  # Returns 1 (without partial exports the caller should rely on) if any
+  # single one can't be recovered.
+  for name in "${SERVICES[@]}"; do
+    local cf_log="$LOG_DIR/$name.tunnel.log"
+    local url
+    url="$(extract_tunnel_url "$cf_log")"
+    if [ -z "$url" ]; then
+      return 1
+    fi
+    export "$(env_name_for "$name")=$url"
+  done
+  return 0
+}
+
 print_summary() {
   echo ""
   echo "=================================================="
@@ -254,6 +326,14 @@ print_summary() {
 }
 
 do_start() {
+  if everything_already_up && recover_urls_or_return_1; then
+    log "Everything's already running — not restarting anything"
+    print_summary
+    echo "(Nothing was stopped or rebuilt. Use \`tunnel restart\` to restart the servers behind"
+    echo " these same links, or \`tunnel stop\` first if you want a genuinely fresh start.)"
+    return
+  fi
+
   do_stop
   sleep 1
 
@@ -282,19 +362,11 @@ do_restart() {
     fi
   done
 
-  for name in "${SERVICES[@]}"; do
-    local cf_log="$LOG_DIR/$name.tunnel.log"
-    local url
-    url="$(extract_tunnel_url "$cf_log")"
-    if [ -z "$url" ]; then
-      log "Couldn't recover $name's tunnel URL from $cf_log — doing a full start instead"
-      do_start
-      return
-    fi
-    local var_name
-    var_name="$(env_name_for "$name")"
-    export "$var_name=$url"
-  done
+  if ! recover_urls_or_return_1; then
+    log "Couldn't recover an existing tunnel URL — doing a full start instead"
+    do_start
+    return
+  fi
 
   for name in "${SERVICES[@]}"; do
     run_build "$name"
