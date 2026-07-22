@@ -329,6 +329,7 @@ do_start() {
   if everything_already_up && recover_urls_or_return_1; then
     log "Everything's already running — not restarting anything"
     print_summary
+    echo ""
     echo "(Nothing was stopped or rebuilt. Use \`tunnel restart\` to restart the servers behind"
     echo " these same links, or \`tunnel stop\` first if you want a genuinely fresh start.)"
     return
