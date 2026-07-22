@@ -1,6 +1,6 @@
 ---
 name: setup-tunnel
-description: Use when the user wants to expose their local dev server(s) publicly via a Cloudflare tunnel — triggers on "set up tunnel", "/setup-tunnel", "let me share my local server", "give me a public link to my localhost". Installs the shared `tunnel` engine if missing and writes this project's config INTO the repo so `tunnel start`/`restart`/`stop` works for every teammate who clones it, not just the person who ran this skill.
+description: Use when the user wants to expose their local dev server(s) publicly via a Cloudflare tunnel — triggers on "set up tunnel", "/setup-tunnel", "let me share my local server", "give me a public link to my localhost". Writes this project's config INTO the repo so `./tunnel/run start`/`restart`/`stop` works for every teammate who clones it, not just the person who ran this skill — no manual engine install needed, `run` bootstraps it itself.
 argument-hint: "(none needed — inspects the current project)"
 user-invocable: true
 disable-model-invocation: false
@@ -10,43 +10,35 @@ disable-model-invocation: false
 
 ## Overview
 
-This project ships with a generic, reusable `tunnel` engine (one shared script, installed once per
-machine) that starts local service(s), tunnels each through Cloudflare, and prints a public link. The
-engine itself knows nothing about this project — everything project-specific lives in a small config
-file. This skill's job is to **write that config file, checked into the repo**, by inspecting the
-current project, so the user never has to hand-write the bash themselves — and so every teammate who
-clones the repo gets `tunnel start` working for free, not just the person who ran this skill.
+This kit ships a generic, reusable `tunnel` engine that starts local service(s), tunnels each through
+Cloudflare, and prints a public link. The engine itself knows nothing about this project — everything
+project-specific lives in a small config file. This skill's job is to **write that config file, checked
+into the repo**, by inspecting the current project, so the user never has to hand-write the bash
+themselves — and so every teammate who clones the repo gets it working for free, not just the person
+who ran this skill.
 
 Split of responsibilities:
-- **The engine** (`~/.local/bin/tunnel`) — a personal, per-machine install. Each teammate installs it
-  once, same as any other CLI tool. Not project-specific, so it never goes in the repo.
+- **The engine** (`engine/tunnel` in this folder) — generic, has zero project-specific knowledge.
+  Nobody needs to manually install it: `run` (below) bootstraps it to `~/.local/bin` on its own, the
+  first time anyone invokes it on their machine.
+- **`run`** — a committed bootstrap wrapper. `./tunnel/run start`/`restart`/`stop` is the command every
+  teammate actually types; it auto-installs the engine on first use, then delegates to it.
 - **The config** (`.tunnel.config.sh` at the project root) — project-specific, **committed to git**.
-  Anyone who clones the repo and has the engine installed can immediately run `tunnel start` — no
-  per-person setup, no skill re-run needed.
+  Anyone who clones the repo can immediately run `./tunnel/run start` — no per-person setup, no skill
+  re-run needed.
 
-This is a one-time setup per project — whoever runs it first commits the config for the whole team.
-Re-run it only if the project's shape changes (new service, new ports, moved directories).
+This is a one-time setup per project — whoever runs it first commits the whole `tunnel/` folder plus
+`.tunnel.config.sh` for the rest of the team. Re-run it only if the project's shape changes (new
+service, new ports, moved directories).
 
-## Step 1 — Install the engine, if missing
+## Step 1 — Confirm `cloudflared` and `python3` are available
 
-```bash
-ls ~/.local/bin/tunnel 2>/dev/null && echo "already installed" || echo "needs install"
-```
+You don't need to install the `tunnel` engine yourself — `tunnel/run` (committed alongside this
+SKILL.md) bootstraps it onto `~/.local/bin` automatically the first time anyone invokes it, for
+every teammate, not just whoever runs this skill. Nothing to do there.
 
-If missing, find this skill's sibling `../engine/tunnel` file (in the same kit checkout this SKILL.md
-came from) and install it:
-
-```bash
-mkdir -p ~/.local/bin
-cp <path-to-kit>/tunnel/engine/tunnel ~/.local/bin/tunnel
-chmod +x ~/.local/bin/tunnel
-```
-
-Then confirm `~/.local/bin` is on `PATH` (check `echo $PATH`). If it isn't, tell the user to add
-`export PATH="$HOME/.local/bin:$PATH"` to their shell profile (`.zshrc`/`.bashrc`) — don't silently skip
-this, an uninstalled PATH means `tunnel` won't be found later.
-
-Also confirm `cloudflared` is on `PATH` (`which cloudflared`). If missing, tell the user to install it
+Do confirm `cloudflared` is on `PATH` (`which cloudflared`) and `python3` is available (`which
+python3` — ships with macOS by default). If `cloudflared` is missing, tell the user to install it
 (`brew install cloudflared` on macOS) before continuing — don't try to install it yourself without
 asking, it's a system-level package manager action.
 
@@ -120,16 +112,17 @@ it ships with the repo: `git add .tunnel.config.sh`, commit it, and it's live fo
 
 Do a dry `bash -n .tunnel.config.sh` to catch syntax errors before declaring done. Then tell the user:
 
-- The config is ready at `.tunnel.config.sh` — they should review it and commit it (`git add
-  .tunnel.config.sh`) so teammates get it too.
-- Anyone with the engine installed (`~/.local/bin/tunnel`) can now run `tunnel start` from the project
-  root — including teammates, once they've pulled this commit.
+- The config is ready at `.tunnel.config.sh` — they should review it and commit it, **along with the
+  rest of the `tunnel/` folder** (`git add tunnel .tunnel.config.sh`) if that folder isn't already
+  committed, so teammates get both the engine and the config.
+- Once that's pushed, anyone who pulls can just run `./tunnel/run start` — it bootstraps the engine on
+  its own on first use, no manual install needed, for them or for anyone else.
 - They can run it themselves right now:
   ```bash
-  tunnel start
+  ./tunnel/run start
   ```
 
-Don't run `tunnel start` yourself unless the user asks you to, and don't `git commit`/`git add` the
-config file yourself either — creating public tunnel URLs, running long-lived background servers, and
-staging a new file for commit are all actions to let the user trigger themselves, per this project's
+Don't run it yourself unless the user asks you to, and don't `git commit`/`git add` the config or
+`tunnel/` folder yourself either — creating public tunnel URLs, running long-lived background servers,
+and staging files for commit are all actions to let the user trigger themselves, per this project's
 usual "confirm before acting" norms.

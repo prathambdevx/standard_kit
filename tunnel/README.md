@@ -15,22 +15,24 @@ else" below.**
    publishes whatever you've already got running).
 3. Drop this whole `tunnel/` folder into the repo and ask Claude to run `setup-tunnel/SKILL.md` —
    once. It writes `.tunnel.config.sh` at the project root.
-4. **Commit and push `.tunnel.config.sh`.** This is the step that makes it a team thing, not a
-   personal one — from here on, anyone who pulls this commit gets `tunnel start` working.
+4. **Commit and push the whole `tunnel/` folder + `.tunnel.config.sh`.** This is the step that makes
+   it a team thing, not a personal one — from here on, anyone who pulls this gets `tunnel start`
+   working with zero manual setup, via `./tunnel/run` (see below).
 5. Run one of:
    ```bash
-   tunnel start      # fresh public links (first run, or whenever you want new ones)
-   tunnel restart    # same public links as last time, servers restarted behind them
-   tunnel stop        # shuts everything down
+   ./tunnel/run start      # fresh public links (first run, or whenever you want new ones)
+   ./tunnel/run restart    # same public links as last time, servers restarted behind them
+   ./tunnel/run stop        # shuts everything down
    ```
 
-**Everyone else** (once `.tunnel.config.sh` is committed): install the engine once —
+**Everyone else** (once the folder is committed): just `git pull`, then run the exact same commands —
 ```bash
-mkdir -p ~/.local/bin && cp tunnel/engine/tunnel ~/.local/bin/tunnel && chmod +x ~/.local/bin/tunnel
+./tunnel/run start
 ```
-— `git pull`, then just run `tunnel start`. No skill, no config to write, nothing project-specific to
-set up personally. (The engine install is per-machine, not per-project — do it once and it works for
-every repo that has a `.tunnel.config.sh`, this one included.)
+`./tunnel/run` is a committed bootstrap wrapper — the first time anyone runs it on their machine, it
+installs the shared engine to `~/.local/bin` automatically (no manual copy/chmod needed); every run
+after that (first-timer or not) it just delegates straight to it. Nothing to install by hand, nothing
+project-specific to set up personally — `git pull` really is the whole story now.
 
 Everything below is how it works under the hood, only useful if something needs debugging or you're
 adapting it for an unusual project shape.
@@ -46,23 +48,28 @@ tunnel combo silently breaks (see "Why production mode" below).
 
 | Path | What it is |
 |---|---|
-| `engine/tunnel` | The generic engine — **install once, shared across every project.** Has zero project-specific knowledge; everything project-specific lives in a config file. |
+| `run` | **The one file teammates need to know about.** A committed bootstrap wrapper — auto-installs the engine to `~/.local/bin` the first time anyone runs it, then delegates to it. `./tunnel/run start` always works, whether it's your first time or your hundredth. |
+| `engine/tunnel` | The generic engine — has zero project-specific knowledge; everything project-specific lives in a config file. You normally never call this directly — `run` does it for you. |
 | `setup-tunnel/SKILL.md` | A Claude Code skill: run it once in a new project and it writes that project's config file for you (detects package manager, ports, build/start commands, whether a client-env-var needs rewiring to a backend tunnel, etc). Needs the rest of this `tunnel/` folder alongside it (it copies `../engine/tunnel` for you) — don't lift just the SKILL.md file out on its own. |
 | `examples/` | Two config templates (single-service, and web+backend with cross-URL wiring) to read or copy by hand instead of running the skill. |
 
-### Install (one-time, per machine)
+### Install
 
+Nothing to install by hand under normal use — `./tunnel/run <command>` bootstraps the engine to
+`~/.local/bin` on its own the first time it's run (see the `run` row above). It'll tell you if
+`~/.local/bin` isn't on your `PATH` and needs adding to your shell profile, and still works for that
+one invocation regardless.
+
+If you'd rather install the plain `tunnel` command onto your `PATH` yourself (so you can type `tunnel
+start` instead of `./tunnel/run start`, useful once you're using this across several projects):
 ```bash
 mkdir -p ~/.local/bin
 cp tunnel/engine/tunnel ~/.local/bin/tunnel
 chmod +x ~/.local/bin/tunnel
 ```
-
-Make sure `~/.local/bin` is on your `PATH` (add `export PATH="$HOME/.local/bin:$PATH"` to your
-`.zshrc`/`.bashrc` if it isn't already). Requires [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
-on `PATH` (`brew install cloudflared`) and `python3` (ships with macOS). The setup-tunnel skill does
-this install for you automatically if it finds the engine missing — this is only needed if you're
-setting up by hand instead.
+Either way, this also requires [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+on `PATH` (`brew install cloudflared`) and `python3` (ships with macOS) — those aren't things a script
+can safely install for you unasked, so make sure they're there first.
 
 ### Set up a new project
 
@@ -86,10 +93,14 @@ committed.
 
 ```bash
 cd ~/code/whatever-project
-tunnel start      # fresh tunnels — use for the very first run, or when you want new public URLs
-tunnel restart    # same public URLs, servers restarted behind them (rebuilds/re-patches as configured)
-tunnel stop        # tears everything down
+./tunnel/run start      # fresh tunnels — first run, or whenever you want new public URLs
+./tunnel/run restart    # same public URLs, servers restarted behind them (rebuilds/re-patches as configured)
+./tunnel/run stop        # tears everything down
 ```
+
+(If you installed the plain `tunnel` command onto your `PATH` per the Install section above, `tunnel
+start` / `restart` / `stop` work identically — `run` is just a thin, self-installing wrapper around the
+exact same engine.)
 
 Logs (one file per service, plus a `.build.log` and `.tunnel.log` per service) live at
 `<project-root>/.tunnel/logs/` — inside the project, so they're visible in your editor's sidebar/search,

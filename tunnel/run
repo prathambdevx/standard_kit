@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Committed bootstrap wrapper — this is the ONE file every teammate needs to
+# know about. It installs the shared `tunnel` engine to ~/.local/bin the
+# first time anyone runs it on their machine (skipped instantly on every run
+# after that), then delegates straight to it.
+#
+# Usage (from the project root, after `git pull`):
+#   ./tunnel/run start
+#   ./tunnel/run restart
+#   ./tunnel/run stop
+#
+# Requires this whole `tunnel/` folder to be committed in the repo (not just
+# `.tunnel.config.sh`) — `run` copies its sibling `engine/tunnel` file.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENGINE_SRC="$SCRIPT_DIR/engine/tunnel"
+ENGINE_DEST="$HOME/.local/bin/tunnel"
+
+if ! command -v tunnel > /dev/null 2>&1; then
+  echo "→ tunnel engine not found on PATH — installing to $ENGINE_DEST"
+  mkdir -p "$HOME/.local/bin"
+  cp "$ENGINE_SRC" "$ENGINE_DEST"
+  chmod +x "$ENGINE_DEST"
+
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *)
+      echo "→ ~/.local/bin isn't on your PATH yet."
+      echo "  Add this to your shell profile (~/.zshrc or ~/.bashrc), then open a new terminal:"
+      echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+      echo "  Running it directly for this one invocation instead:"
+      exec "$ENGINE_DEST" "$@"
+      ;;
+  esac
+fi
+
+exec tunnel "$@"
