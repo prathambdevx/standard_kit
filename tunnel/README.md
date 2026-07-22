@@ -12,7 +12,12 @@ deploy needed.
    publishes whatever you've already got running).
 3. Drop this whole `tunnel/` folder into the repo and ask Claude to run `setup-tunnel/SKILL.md` —
    once, the first time. It sets everything else up for you.
-4. Run `tunnel start`.
+4. Run one of:
+   ```bash
+   tunnel start      # fresh public links (first run, or whenever you want new ones)
+   tunnel restart    # same public links as last time, servers restarted behind them
+   tunnel stop        # shuts everything down
+   ```
 
 That's it — you get back a public URL. Everything below is how it works under the hood, only useful
 if something needs debugging or you're adapting it for an unusual project shape.
