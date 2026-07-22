@@ -34,6 +34,17 @@ web_build_cmd="cd \"$TUNNEL_PROJECT_DIR/apps/web\" && npm run build"
 web_start_cmd="cd \"$TUNNEL_PROJECT_DIR/apps/web\" && npm run start"
 web_ready_pattern="Ready|started"
 web_kill_pattern=""
+# Got a free persistent ngrok static domain (dashboard.ngrok.com/domains)?
+# Set NGROK_DOMAIN="your-name.ngrok-free.app" in a git-ignored config.tunnel
+# file at the project root (never commit that file — it's personal, tied to
+# your own ngrok account) and this gives you the same public link every
+# single run instead of a fresh random cloudflared one each time. Nobody has
+# to do this — leaving it unset just falls back to cloudflared, same as
+# always. See tunnel/README.md for the full walkthrough.
+if [ -n "${NGROK_DOMAIN:-}" ]; then
+  web_tunnel_provider="ngrok"
+  web_ngrok_domain="$NGROK_DOMAIN"
+fi
 
 # ---- Wiring: frontend needs the backend's tunnel URL baked in --------------
 # Whatever your framework's "public/client-exposed env var" prefix is
@@ -71,7 +82,10 @@ with open(path) as f:
 
 def replace(m):
     origins = [o.strip() for o in m.group(1).split(",") if o.strip()]
-    origins = [o for o in origins if not o.endswith(".trycloudflare.com")]
+    # Drop any previous tunnel origin — a random cloudflared one, or this
+    # exact static ngrok domain from a prior run (a static domain would
+    # otherwise just accumulate as an identical duplicate every restart).
+    origins = [o for o in origins if not o.endswith(".trycloudflare.com") and o != frontend_url]
     origins.append(frontend_url)
     return "CORS_ALLOWED_ORIGINS=" + ",".join(origins)
 

@@ -39,6 +39,22 @@ tunnel restart    # same public links as last time, servers restarted behind the
 tunnel stop        # shuts everything down
 ```
 
+**Tired of the public link changing every single run?** Cloudflare's free quick tunnels always give
+you a new random URL — but [ngrok's free tier](https://dashboard.ngrok.com/domains) includes one
+persistent static domain per account, and this kit supports it. Sign up free, claim your static
+domain from the ngrok dashboard, run `ngrok config add-authtoken <token>` once, then create a
+`config.tunnel` file at your project root (**never committed** — the engine auto-adds it to
+`.gitignore`) with just one line:
+```bash
+NGROK_DOMAIN="your-name.ngrok-free.app"
+```
+That's it — the same link every single time you run `tunnel start`/`restart`, instead of a fresh
+random one. Delete the file (or leave `NGROK_DOMAIN` unset) to fall back to the default random
+cloudflared link. This is entirely personal/optional — whether it does anything at all depends on the
+project's own `.tunnel.config.sh` actually checking for `$NGROK_DOMAIN` (see
+`examples/web-and-backend.sh` for the pattern) — the engine itself has no opinion on it, it just makes
+sure `config.tunnel` gets read before the shared config, if it exists.
+
 Everything below is how it works under the hood, only useful if something needs debugging or you're
 adapting it for an unusual project shape.
 

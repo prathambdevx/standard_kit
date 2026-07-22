@@ -27,6 +27,14 @@
 #     <name>_kill_pattern="pattern"         # optional — extra `pkill -f` pattern
 #                                           #   used on stop/restart (besides the
 #                                           #   port-based kill, which always runs)
+#     <name>_tunnel_provider="ngrok"        # optional — default is "cloudflared"
+#                                           #   (free, but its URL changes every run).
+#                                           #   Set to "ngrok" for a persistent free
+#                                           #   static domain instead (one per ngrok
+#                                           #   account) — requires <name>_ngrok_domain
+#                                           #   and `ngrok config add-authtoken` already
+#                                           #   run once on this machine.
+#     <name>_ngrok_domain="foo.ngrok-free.app"  # required if tunnel_provider=ngrok
 #
 #   Optional hook, called once after every service is running and tunneled:
 #     post_tunnel_hook() { ... }
@@ -82,15 +90,36 @@ LOG_DIR="$TUNNEL_PROJECT_DIR/.tunnel/logs"
 mkdir -p "$LOG_DIR"
 
 ensure_gitignored() {
-  # Make sure .tunnel/ never ends up staged/committed by accident.
+  # Make sure .tunnel/ (logs) and config.tunnel (personal overrides — see
+  # below) never end up staged/committed by accident.
   local gitignore="$TUNNEL_PROJECT_DIR/.gitignore"
-  if [ -d "$TUNNEL_PROJECT_DIR/.git" ] && ! grep -qxF ".tunnel/" "$gitignore" 2>/dev/null; then
-    { [ -f "$gitignore" ] && [ -s "$gitignore" ] && echo ""; echo ".tunnel/"; } >> "$gitignore"
+  if [ -d "$TUNNEL_PROJECT_DIR/.git" ]; then
+    for entry in ".tunnel/" "config.tunnel"; do
+      if ! grep -qxF "$entry" "$gitignore" 2>/dev/null; then
+        { [ -f "$gitignore" ] && [ -s "$gitignore" ] && echo ""; echo "$entry"; } >> "$gitignore"
+      fi
+    done
   fi
 }
 ensure_gitignored
 
 log() { echo "→ $*"; }
+
+# Optional personal override file, sourced BEFORE the shared committed
+# config so anything the config checks for (e.g. "$NGROK_DOMAIN" being set)
+# sees it in time. This is where your own ngrok static domain goes — that's
+# personal to your account and has no business in a file the whole team
+# shares. Never committed (see ensure_gitignored above). One line is enough:
+#   NGROK_DOMAIN="your-name.ngrok-free.app"
+# What that variable actually does is up to the project's own
+# .tunnel.config.sh to decide (see examples/web-and-backend.sh) — the engine
+# itself doesn't know or care what NGROK_DOMAIN means, it just makes sure
+# this file, if present, gets sourced first.
+LOCAL_OVERRIDE="$TUNNEL_PROJECT_DIR/config.tunnel"
+if [ -f "$LOCAL_OVERRIDE" ]; then
+  # shellcheck disable=SC1090
+  source "$LOCAL_OVERRIDE"
+fi
 
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
@@ -138,9 +167,21 @@ kill_service() {
   kill_port "${!port_var}"
 }
 
+tunnel_provider_for() {
+  local name="$1"
+  local provider_var="${name}_tunnel_provider"
+  echo "${!provider_var:-cloudflared}"
+}
+
 kill_tunnel_for() {
-  local port="$1"
-  pkill -f "cloudflared tunnel --url http://localhost:$port" 2>/dev/null || true
+  local name="$1"
+  local port_var="${name}_port"
+  local port="${!port_var}"
+  if [ "$(tunnel_provider_for "$name")" = "ngrok" ]; then
+    pkill -f "ngrok http .* $port( |$)" 2>/dev/null || true
+  else
+    pkill -f "cloudflared tunnel --url http://localhost:$port" 2>/dev/null || true
+  fi
 }
 
 wait_for_port() {
@@ -255,12 +296,28 @@ tunnel_service() {
   local port_var="${name}_port"
   local port="${!port_var}"
   local cf_log="$LOG_DIR/$name.tunnel.log"
-  log "Opening tunnel for $name (:$port)"
+  local provider
+  provider="$(tunnel_provider_for "$name")"
+  log "Opening tunnel for $name (:$port) via $provider"
   : > "$cf_log"
-  cloudflared tunnel --url "http://localhost:$port" > "$cf_log" 2>&1 &
-  wait_for_log_pattern "$cf_log" "https://[a-z0-9-]+\.trycloudflare\.com" 20 || exit 1
+
   local url
-  url="$(extract_tunnel_url "$cf_log")"
+  if [ "$provider" = "ngrok" ]; then
+    local domain_var="${name}_ngrok_domain"
+    local domain="${!domain_var:-}"
+    if [ -z "$domain" ]; then
+      echo "Service '$name' has ${name}_tunnel_provider=ngrok but no ${name}_ngrok_domain set." >&2
+      exit 1
+    fi
+    ngrok http --url="$domain" "$port" --log=stdout > "$cf_log" 2>&1 &
+    wait_for_log_pattern "$cf_log" "started tunnel" 20 || exit 1
+    url="https://$domain"
+  else
+    cloudflared tunnel --url "http://localhost:$port" > "$cf_log" 2>&1 &
+    wait_for_log_pattern "$cf_log" "https://[a-z0-9-]+\.trycloudflare\.com" 20 || exit 1
+    url="$(extract_tunnel_url "$cf_log")"
+  fi
+
   local var_name
   var_name="$(env_name_for "$name")"
   export "$var_name=$url"
@@ -271,8 +328,7 @@ do_stop() {
   log "Stopping all services and tunnels"
   for name in "${SERVICES[@]}"; do
     kill_service "$name"
-    local port_var="${name}_port"
-    kill_tunnel_for "${!port_var}"
+    kill_tunnel_for "$name"
   done
 }
 
@@ -280,7 +336,11 @@ tunnel_already_up() {
   local name="$1"
   local port_var="${name}_port"
   local port="${!port_var}"
-  pgrep -f "cloudflared tunnel --url http://localhost:$port" > /dev/null 2>&1
+  if [ "$(tunnel_provider_for "$name")" = "ngrok" ]; then
+    pgrep -f "ngrok http .*$port" > /dev/null 2>&1
+  else
+    pgrep -f "cloudflared tunnel --url http://localhost:$port" > /dev/null 2>&1
+  fi
 }
 
 service_already_up() {
@@ -299,13 +359,20 @@ everything_already_up() {
 }
 
 recover_urls_or_return_1() {
-  # Populates TUNNEL_URL_<NAME> from each service's existing tunnel log.
-  # Returns 1 (without partial exports the caller should rely on) if any
-  # single one can't be recovered.
+  # Populates TUNNEL_URL_<NAME> for each service — from its known static
+  # domain (ngrok) or from its existing tunnel log (cloudflared). Returns 1
+  # (without partial exports the caller should rely on) if any single one
+  # can't be recovered.
   for name in "${SERVICES[@]}"; do
-    local cf_log="$LOG_DIR/$name.tunnel.log"
     local url
-    url="$(extract_tunnel_url "$cf_log")"
+    if [ "$(tunnel_provider_for "$name")" = "ngrok" ]; then
+      local domain_var="${name}_ngrok_domain"
+      url="https://${!domain_var:-}"
+      [ "$url" = "https://" ] && url=""
+    else
+      local cf_log="$LOG_DIR/$name.tunnel.log"
+      url="$(extract_tunnel_url "$cf_log")"
+    fi
     if [ -z "$url" ]; then
       return 1
     fi
