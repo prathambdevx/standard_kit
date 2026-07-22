@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Committed bootstrap wrapper — this is the ONE file every teammate needs to
-# know about. It installs the shared `tunnel` engine to ~/.local/bin the
-# first time anyone runs it on their machine (skipped instantly on every run
-# after that), then delegates straight to it.
+# know about. It makes sure cloudflared + the shared `tunnel` engine exist on
+# this machine (installing whichever is missing, the first time anyone runs
+# it — skipped instantly on every run after that), then delegates straight
+# to the engine.
 #
 # Usage (from the project root, after `git pull`):
 #   ./tunnel/run start
@@ -17,6 +18,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENGINE_SRC="$SCRIPT_DIR/engine/tunnel"
 ENGINE_DEST="$HOME/.local/bin/tunnel"
+
+ensure_cloudflared() {
+  command -v cloudflared > /dev/null 2>&1 && return
+  echo "→ cloudflared not found — this is what actually creates the public tunnel."
+  if command -v brew > /dev/null 2>&1; then
+    echo "  Installing it via Homebrew (brew install cloudflared)..."
+    brew install cloudflared
+  else
+    echo "  Homebrew isn't available to install it automatically. Install it yourself:"
+    echo "    https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+    exit 1
+  fi
+}
+
+ensure_python3() {
+  command -v python3 > /dev/null 2>&1 && return
+  echo "→ python3 not found. It ships with macOS by default; on Linux, install it via your"
+  echo "  distro's package manager (e.g. apt install python3) and try again."
+  exit 1
+}
+
+ensure_cloudflared
+ensure_python3
 
 if ! command -v tunnel > /dev/null 2>&1; then
   echo "→ tunnel engine not found on PATH — installing to $ENGINE_DEST"

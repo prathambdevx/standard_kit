@@ -31,16 +31,19 @@ This is a one-time setup per project — whoever runs it first commits the whole
 `.tunnel.config.sh` for the rest of the team. Re-run it only if the project's shape changes (new
 service, new ports, moved directories).
 
-## Step 1 — Confirm `cloudflared` and `python3` are available
+## Step 1 — Nothing to do here, `tunnel/run` handles prerequisites
 
-You don't need to install the `tunnel` engine yourself — `tunnel/run` (committed alongside this
-SKILL.md) bootstraps it onto `~/.local/bin` automatically the first time anyone invokes it, for
-every teammate, not just whoever runs this skill. Nothing to do there.
+You don't need to install the `tunnel` engine, `cloudflared`, or check for `python3` yourself —
+`tunnel/run` (committed alongside this SKILL.md) does all of that automatically the first time
+anyone invokes it, for every teammate, not just whoever runs this skill:
+- Installs the engine to `~/.local/bin` if missing.
+- Installs `cloudflared` via Homebrew if it's missing and `brew` is available (only asks nothing here
+  because `run` itself prints exactly what it's doing before doing it — this isn't the skill silently
+  installing something, it's the committed script being transparent about its own bootstrap).
+- Checks for `python3` and stops with clear instructions if it's missing (doesn't attempt to install
+  it — too platform-variable to guess safely).
 
-Do confirm `cloudflared` is on `PATH` (`which cloudflared`) and `python3` is available (`which
-python3` — ships with macOS by default). If `cloudflared` is missing, tell the user to install it
-(`brew install cloudflared` on macOS) before continuing — don't try to install it yourself without
-asking, it's a system-level package manager action.
+So skip straight to Step 2.
 
 ## Step 2 — Inspect the project
 

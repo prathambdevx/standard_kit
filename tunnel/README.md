@@ -72,9 +72,12 @@ mkdir -p ~/.local/bin
 cp tunnel/engine/tunnel ~/.local/bin/tunnel
 chmod +x ~/.local/bin/tunnel
 ```
-Either way, this also requires [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
-on `PATH` (`brew install cloudflared`) and `python3` (ships with macOS) — those aren't things a script
-can safely install for you unasked, so make sure they're there first.
+This also needs [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+and `python3` — `./tunnel/run` checks for both and installs `cloudflared` for you automatically via
+Homebrew if it's missing and `brew` is available (prints exactly what it's doing, doesn't do it
+silently). If Homebrew isn't available, or `python3` is missing (rare — it ships with macOS by
+default), it tells you exactly what to run instead and stops, rather than guessing at a platform-
+specific install command for you.
 
 ### Set up a new project
 
