@@ -29,8 +29,14 @@ bff_kill_pattern=""                    # only needed if port-kill isn't enough
 # page LOOKS fine (server-rendered HTML loads) but every click/drawer/button
 # is dead, because the framework never attached real event listeners.
 # Production mode has no such socket dependency, so it tunnels cleanly.
+#
+# web_build_cmd calls patch_frontend_env (defined below) BEFORE building —
+# bff is always started/tunneled first (SERVICES order), so $TUNNEL_URL_BFF
+# is already known by the time web builds. That means web only ever builds
+# once, with the correct URL baked in from the start, instead of once with
+# a stale value then again in post_tunnel_hook after patching.
 web_port=3000
-web_build_cmd="cd \"$TUNNEL_PROJECT_DIR/apps/web\" && npm run build"
+web_build_cmd="patch_frontend_env && cd \"$TUNNEL_PROJECT_DIR/apps/web\" && npm run build"
 web_start_cmd="cd \"$TUNNEL_PROJECT_DIR/apps/web\" && npm run start"
 web_ready_pattern="Ready|started"
 web_kill_pattern=""
@@ -51,8 +57,9 @@ fi
 # (NEXT_PUBLIC_*, VITE_*, REACT_APP_*, ...), the browser can't reach
 # `localhost:<port>` on the machine sharing the link — it needs the backend's
 # actual tunnel URL. IMPORTANT: most frameworks bake these vars in at BUILD
-# time, not read them at server start — so after patching the env file you
-# must rebuild, not just restart. That's why this hook calls run_build.
+# time, not read them at server start — so patching the env file only takes
+# effect on the NEXT build, not a restart. That's why web_build_cmd above
+# calls this directly, rather than patching afterward in post_tunnel_hook.
 patch_frontend_env() {
   # Replace this with whatever your project's actual env file + var name is.
   # Example for a Next.js app using .env.local:
@@ -112,13 +119,10 @@ PYEOF
 # }
 
 post_tunnel_hook() {
-  echo "  patching frontend env with backend tunnel URL"
-  patch_frontend_env
-
-  echo "  rebuilding frontend (client-exposed env vars are baked in at build time)"
-  run_build web
-  restart_service web
-
+  # Frontend env is already patched + baked in via web_build_cmd above —
+  # bff comes first in SERVICES order, so its URL was already known before
+  # web ever built. Only bff needs patching here, since it's the one whose
+  # own build/start happened BEFORE web's tunnel URL existed.
   echo "  patching backend CORS allowlist with the frontend tunnel origin"
   patch_backend_cors
 
