@@ -78,9 +78,17 @@ EOF
   exit 1
 fi
 
-SLUG="$(basename "$TUNNEL_PROJECT_DIR")"
-LOG_DIR="/tmp/tunnel/$SLUG"
+LOG_DIR="$TUNNEL_PROJECT_DIR/.tunnel/logs"
 mkdir -p "$LOG_DIR"
+
+ensure_gitignored() {
+  # Make sure .tunnel/ never ends up staged/committed by accident.
+  local gitignore="$TUNNEL_PROJECT_DIR/.gitignore"
+  if [ -d "$TUNNEL_PROJECT_DIR/.git" ] && ! grep -qxF ".tunnel/" "$gitignore" 2>/dev/null; then
+    { [ -f "$gitignore" ] && [ -s "$gitignore" ] && echo ""; echo ".tunnel/"; } >> "$gitignore"
+  fi
+}
+ensure_gitignored
 
 log() { echo "→ $*"; }
 

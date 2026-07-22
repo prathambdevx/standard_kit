@@ -47,6 +47,11 @@ tunnel restart    # same public URLs, servers restarted behind them (rebuilds/re
 tunnel stop        # tears everything down
 ```
 
+Logs (one file per service, plus a `.build.log` and `.tunnel.log` per service) live at
+`<project-root>/.tunnel/logs/` — inside the project, so they're visible in your editor's sidebar/search,
+not off in `/tmp`. The engine auto-appends `.tunnel/` to that project's `.gitignore` the first time it
+runs there (creating the file if needed), so none of it ever ends up staged by accident.
+
 ## Config file contract
 
 ```bash
