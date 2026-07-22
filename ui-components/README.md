@@ -148,12 +148,22 @@ tap can still fall through during that window even though the dialog looks stati
 
 ```tsx
 const isTransitioningRef = useRef(false);
+// Identifies the latest call so a superseded transition settling first can't
+// clear the guard while a newer one is still in flight (e.g. the user taps
+// two tabs in quick succession — the first tap's transition may resolve
+// after the second tap's has already started a new one).
+const transitionTokenRef = useRef(0);
 
 const changeTab = (next: Tab) => {
+  const token = ++transitionTokenRef.current;
   isTransitioningRef.current = true;
-  startStateTransition(() => setActiveTab(next)).finished.finally(() => {
-    isTransitioningRef.current = false;
-  });
+  const clearGuard = () => {
+    if (transitionTokenRef.current === token) isTransitioningRef.current = false;
+  };
+  // .then(clearGuard, clearGuard) — not .finally() — because .finished can
+  // reject (the update callback throwing) and .finally() alone would leave
+  // that rejection unhandled instead of actually catching it.
+  startStateTransition(() => setActiveTab(next)).finished.then(clearGuard, clearGuard);
 };
 
 <Dialog
