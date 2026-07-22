@@ -274,12 +274,25 @@ run_with_pty() {
   # — e.g. run from CI, a non-interactive script, or certain sandboxes).
   # Fall back to plain execution there; the only cost is losing the
   # line-buffering fix in that specific case, not a hard failure.
+  #
+  # IMPORTANT: `script`'s own stdin — not the pty it creates for the child —
+  # is what it puts into raw mode, to transparently relay real keystrokes.
+  # We run it backgrounded with no interactive input to relay, so that raw
+  # mode serves no purpose here — and if this process gets killed forcefully
+  # (which `kill_service` always does, via `kill -9`, on every restart),
+  # `script` never gets a chance to restore the terminal afterward, leaving
+  # the actual calling terminal permanently stuck in raw mode (symptom:
+  # output starts "staircasing" — no more automatic return-to-column-0 on
+  # newline — until the terminal is closed or `stty sane` is run manually).
+  # Redirecting script's own stdin to /dev/null stops it from touching the
+  # real terminal's settings at all — the child still gets a proper pty
+  # (line-buffering intact), script just never has real keystrokes to relay.
   if [ -t 0 ] && command -v script > /dev/null 2>&1; then
     if [ "$(uname)" = "Darwin" ]; then
-      script -q /dev/null bash -c "$cmd"
+      script -q /dev/null bash -c "$cmd" < /dev/null
       return
     else
-      script -qc "$cmd" /dev/null
+      script -qc "$cmd" /dev/null < /dev/null
       return
     fi
   fi
