@@ -361,10 +361,18 @@ tunnel_already_up() {
 }
 
 service_already_up() {
+  # A port being open isn't enough — a wedged/hung process can keep holding
+  # it open while never actually responding to a new request (this happened
+  # in practice: a stuck in-flight request left a Next.js server accepting
+  # connections but answering nothing). Confirm it actually responds before
+  # calling it "up" — otherwise `tunnel start`'s idempotency check would
+  # wrongly report "already running" on something silently broken, instead
+  # of catching and fixing it with a real restart.
   local name="$1"
   local port_var="${name}_port"
   local port="${!port_var}"
-  lsof -i "tcp:$port" -sTCP:LISTEN > /dev/null 2>&1
+  lsof -i "tcp:$port" -sTCP:LISTEN > /dev/null 2>&1 || return 1
+  curl -s -o /dev/null --max-time 5 "http://localhost:$port/" > /dev/null 2>&1
 }
 
 everything_already_up() {
