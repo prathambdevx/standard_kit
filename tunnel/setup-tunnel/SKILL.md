@@ -108,7 +108,7 @@ it ships with the repo: `git add .tunnel.config.sh`, commit it, and it's live fo
 
 `chmod +x` the resulting file.
 
-## Step 4 — Confirm
+## Step 4 — Confirm, then offer to run it
 
 Do a dry `bash -n .tunnel.config.sh` to catch syntax errors before declaring done. Then tell the user:
 
@@ -116,13 +116,13 @@ Do a dry `bash -n .tunnel.config.sh` to catch syntax errors before declaring don
   rest of the `tunnel/` folder** (`git add tunnel .tunnel.config.sh`) if that folder isn't already
   committed, so teammates get both the engine and the config.
 - Once that's pushed, anyone who pulls can just run `./tunnel/run start` — it bootstraps the engine on
-  its own on first use, no manual install needed, for them or for anyone else.
-- They can run it themselves right now:
-  ```bash
-  ./tunnel/run start
-  ```
+  its own on first use, no manual install needed. That part only applies to *them*, though: this
+  skill running once on your machine doesn't reach anyone else's — every teammate still runs
+  `./tunnel/run start` themselves (or asks their own Claude session to), there's no way around a
+  command needing to execute on the machine it affects.
 
-Don't run it yourself unless the user asks you to, and don't `git commit`/`git add` the config or
-`tunnel/` folder yourself either — creating public tunnel URLs, running long-lived background servers,
-and staging files for commit are all actions to let the user trigger themselves, per this project's
-usual "confirm before acting" norms.
+Then **ask** whether they'd like you to run `./tunnel/run start` right now (don't just run it
+unprompted — creating a public tunnel URL and launching long-lived background servers is exactly the
+kind of action to confirm first). If they say yes, run it and report back the printed URLs. Still
+don't `git add`/`git commit` the config or `tunnel/` folder yourself even if they say yes to running
+it — staging/committing is a separate action they should trigger themselves.

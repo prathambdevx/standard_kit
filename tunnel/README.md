@@ -18,21 +18,26 @@ else" below.**
 4. **Commit and push the whole `tunnel/` folder + `.tunnel.config.sh`.** This is the step that makes
    it a team thing, not a personal one — from here on, anyone who pulls this gets `tunnel start`
    working with zero manual setup, via `./tunnel/run` (see below).
-5. Run one of:
+5. Run:
    ```bash
-   ./tunnel/run start      # fresh public links (first run, or whenever you want new ones)
-   ./tunnel/run restart    # same public links as last time, servers restarted behind them
-   ./tunnel/run stop        # shuts everything down
+   ./tunnel/run start      # first ever run on this machine — installs the engine, then starts
    ```
 
-**Everyone else** (once the folder is committed): just `git pull`, then run the exact same commands —
+**Everyone else** (once the folder is committed): just `git pull`, then the same first command —
 ```bash
 ./tunnel/run start
 ```
-`./tunnel/run` is a committed bootstrap wrapper — the first time anyone runs it on their machine, it
-installs the shared engine to `~/.local/bin` automatically (no manual copy/chmod needed); every run
-after that (first-timer or not) it just delegates straight to it. Nothing to install by hand, nothing
-project-specific to set up personally — `git pull` really is the whole story now.
+
+**That `./tunnel/run` prefix is only needed once per machine** — the very first time, because the
+plain `tunnel` command doesn't exist on your `PATH` yet and `./tunnel/run` is what installs it (see
+"How it works" below for exactly what it does). After that one run, `tunnel` is a real installed
+command like any other, and every future session — this project or any other — just uses the plain
+form, no `./tunnel/run`, no path prefix:
+```bash
+tunnel start      # fresh public links (whenever you want new ones)
+tunnel restart    # same public links as last time, servers restarted behind them
+tunnel stop        # shuts everything down
+```
 
 Everything below is how it works under the hood, only useful if something needs debugging or you're
 adapting it for an unusual project shape.
