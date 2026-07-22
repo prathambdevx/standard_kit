@@ -103,6 +103,23 @@ ensure_gitignored() {
 }
 ensure_gitignored
 
+ensure_config_tunnel_template() {
+  # Create a blank, commented-out config.tunnel the first time it's missing,
+  # so a person opts into a persistent ngrok domain by just uncommenting +
+  # filling in one line, instead of having to know this file's shape at all.
+  local config_tunnel="$TUNNEL_PROJECT_DIR/config.tunnel"
+  if [ ! -f "$config_tunnel" ]; then
+    cat > "$config_tunnel" <<'TEMPLATE'
+# Put your free ngrok static domain here and use that every time you tunnel.
+# Leave it unset (or delete this file) and you'll fall back to a random
+# cloudflared URL that changes on every `tunnel start`.
+
+# NGROK_DOMAIN="your-name.ngrok-free.app"
+TEMPLATE
+  fi
+}
+ensure_config_tunnel_template
+
 log() { echo "→ $*"; }
 
 # Optional personal override file, sourced BEFORE the shared committed
