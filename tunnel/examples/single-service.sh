@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Example tunnel config — single service, no cross-URL wiring needed.
 #
-# Save as ~/.config/tunnel/<your-project-folder-name>.sh, then from that
-# project's directory:
-#   tunnel start
+# Save as .tunnel.config.sh at your project root and commit it — that's
+# what lets any teammate with the engine installed run `tunnel start` after
+# pulling, no personal setup needed. (Only save it under
+# ~/.config/tunnel/<project-folder-name>.sh instead if you deliberately want
+# it to stay personal/uncommitted.)
 
 SERVICES=(app)
 

@@ -3,7 +3,10 @@
 Turns your local dev server(s) into a public link someone else can actually click around in — no
 deploy needed.
 
-**What you need to do:**
+**One person on the team does this, once, per project — everyone else skips straight to "everyone
+else" below.**
+
+**Whoever sets it up first:**
 
 1. Point your local **web** app's env at your local **BFF/backend** (i.e. run both locally, wired to
    each other — `localhost:3000` talking to `localhost:4000`, or whatever your ports are).
@@ -11,16 +14,26 @@ deploy needed.
    Shopify store, your UAT Strapi, prod, whatever — this tool doesn't touch that choice, it just
    publishes whatever you've already got running).
 3. Drop this whole `tunnel/` folder into the repo and ask Claude to run `setup-tunnel/SKILL.md` —
-   once, the first time. It sets everything else up for you.
-4. Run one of:
+   once. It writes `.tunnel.config.sh` at the project root.
+4. **Commit and push `.tunnel.config.sh`.** This is the step that makes it a team thing, not a
+   personal one — from here on, anyone who pulls this commit gets `tunnel start` working.
+5. Run one of:
    ```bash
    tunnel start      # fresh public links (first run, or whenever you want new ones)
    tunnel restart    # same public links as last time, servers restarted behind them
    tunnel stop        # shuts everything down
    ```
 
-That's it — you get back a public URL. Everything below is how it works under the hood, only useful
-if something needs debugging or you're adapting it for an unusual project shape.
+**Everyone else** (once `.tunnel.config.sh` is committed): install the engine once —
+```bash
+mkdir -p ~/.local/bin && cp tunnel/engine/tunnel ~/.local/bin/tunnel && chmod +x ~/.local/bin/tunnel
+```
+— `git pull`, then just run `tunnel start`. No skill, no config to write, nothing project-specific to
+set up personally. (The engine install is per-machine, not per-project — do it once and it works for
+every repo that has a `.tunnel.config.sh`, this one included.)
+
+Everything below is how it works under the hood, only useful if something needs debugging or you're
+adapting it for an unusual project shape.
 
 ## How it works
 
@@ -57,13 +70,17 @@ Two ways:
 
 1. **Run the skill** (recommended) — with the whole `tunnel/` folder present in (or copied into) the
    new repo, ask Claude to run `setup-tunnel/SKILL.md`. It installs the engine if missing, inspects the
-   project, and writes `~/.config/tunnel/<project-folder-name>.sh` for you. It does *not* run
-   `tunnel start` itself — that's left for you to trigger.
+   project, and writes `.tunnel.config.sh` **at the project root**. It does *not* run `tunnel start` or
+   `git commit` itself — both are left for you to trigger.
 2. **Copy a template by hand** — see `examples/single-service.sh` or `examples/web-and-backend.sh`,
-   save as `~/.config/tunnel/<project-folder-name>.sh`, edit the commands/ports for real.
+   save as `.tunnel.config.sh` at the project root, edit the commands/ports for real.
 
-Either way, the config lands at `~/.config/tunnel/<project-folder-name>.sh` — the engine finds it
-automatically by matching the directory name you run `tunnel` from. Nothing to pass on the command line.
+Either way: **commit `.tunnel.config.sh`** once it's right. That's what makes this a one-time,
+whole-team setup instead of something every developer redoes on their own machine — the engine looks
+for exactly this file (`./.tunnel.config.sh` in whatever directory you run `tunnel` from) before
+falling back to a personal `~/.config/tunnel/<project-folder-name>.sh`, so a committed in-repo config
+always wins. Nothing to pass on the command line, and nothing per-person to configure once it's
+committed.
 
 ### Use it
 

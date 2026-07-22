@@ -5,8 +5,11 @@
 # nothing here is BSC-specific — adapt the paths/commands/env-var names to
 # your own project.
 #
-# Save as ~/.config/tunnel/<your-project-folder-name>.sh, then from that
-# project's directory:
+# Save as .tunnel.config.sh at your project root and commit it — that's
+# what lets any teammate with the engine installed run `tunnel start` after
+# pulling, no personal setup needed. (Only save it under
+# ~/.config/tunnel/<project-folder-name>.sh instead if you deliberately want
+# it to stay personal/uncommitted.) Then, from the project's directory:
 #   tunnel start      # fresh tunnel URLs
 #   tunnel restart    # same URLs, servers restarted + re-patched behind them
 

@@ -1,6 +1,6 @@
 ---
 name: setup-tunnel
-description: Use when the user wants to expose their local dev server(s) publicly via a Cloudflare tunnel — triggers on "set up tunnel", "/setup-tunnel", "let me share my local server", "give me a public link to my localhost". Installs the shared `tunnel` engine if missing and writes this project's config file so `tunnel start`/`restart`/`stop` works from here on.
+description: Use when the user wants to expose their local dev server(s) publicly via a Cloudflare tunnel — triggers on "set up tunnel", "/setup-tunnel", "let me share my local server", "give me a public link to my localhost". Installs the shared `tunnel` engine if missing and writes this project's config INTO the repo so `tunnel start`/`restart`/`stop` works for every teammate who clones it, not just the person who ran this skill.
 argument-hint: "(none needed — inspects the current project)"
 user-invocable: true
 disable-model-invocation: false
@@ -13,12 +13,19 @@ disable-model-invocation: false
 This project ships with a generic, reusable `tunnel` engine (one shared script, installed once per
 machine) that starts local service(s), tunnels each through Cloudflare, and prints a public link. The
 engine itself knows nothing about this project — everything project-specific lives in a small config
-file. This skill's job is to **write that config file** by inspecting the current project, so the user
-never has to hand-write the bash themselves.
+file. This skill's job is to **write that config file, checked into the repo**, by inspecting the
+current project, so the user never has to hand-write the bash themselves — and so every teammate who
+clones the repo gets `tunnel start` working for free, not just the person who ran this skill.
 
-This is a one-time setup per project. Once the config exists, the user just runs `tunnel start` /
-`tunnel restart` / `tunnel stop` from the project root forever after — this skill doesn't need to run
-again unless the project's shape changes (new service, new ports, moved directories).
+Split of responsibilities:
+- **The engine** (`~/.local/bin/tunnel`) — a personal, per-machine install. Each teammate installs it
+  once, same as any other CLI tool. Not project-specific, so it never goes in the repo.
+- **The config** (`.tunnel.config.sh` at the project root) — project-specific, **committed to git**.
+  Anyone who clones the repo and has the engine installed can immediately run `tunnel start` — no
+  per-person setup, no skill re-run needed.
+
+This is a one-time setup per project — whoever runs it first commits the config for the whole team.
+Re-run it only if the project's shape changes (new service, new ports, moved directories).
 
 ## Step 1 — Install the engine, if missing
 
@@ -92,25 +99,37 @@ Base it on whichever example fits:
   `single-service.sh`, just repeated per service in `SERVICES=(...)`, no `post_tunnel_hook`.
 
 Fill in real values from Step 2 — real commands, real ports, real paths (using `$TUNNEL_PROJECT_DIR`
-for anything relative to the project root, not a hardcoded absolute path, since the same config should
-keep working if the user clones the repo somewhere else).
+for anything relative to the project root, not a hardcoded absolute path, so the same config keeps
+working for every teammate regardless of where they cloned the repo).
 
-Write the result to:
+**Never put a secret directly in this file** (API keys, tokens, passwords) — it's going into git. If a
+build/start command genuinely needs one, reference an env var the shell already has (`$SOME_TOKEN`),
+don't inline the value.
+
+Write the result to the **project root**, not `~/.config/tunnel/`:
 ```
-~/.config/tunnel/<basename of the current project directory>.sh
+$TUNNEL_PROJECT_DIR/.tunnel.config.sh
 ```
-(This is exactly how the `tunnel` engine finds it later — by matching the directory name you run
-`tunnel` from. No further wiring needed.)
+The `tunnel` engine checks for exactly this file — `./.tunnel.config.sh` in the directory you run
+`tunnel` from — *before* falling back to a personal `~/.config/tunnel/<name>.sh`. Writing it here means
+it ships with the repo: `git add .tunnel.config.sh`, commit it, and it's live for the whole team.
 
 `chmod +x` the resulting file.
 
 ## Step 4 — Confirm
 
-Do a dry `bash -n ~/.config/tunnel/<name>.sh` to catch syntax errors before declaring done. Then tell
-the user the config is ready and they can run:
-```bash
-tunnel start
-```
-from the project root. Don't run `tunnel start` yourself unless the user asks you to — creating public
-tunnel URLs and running long-lived background servers is exactly the kind of action to let the user
-trigger themselves, per this project's usual "confirm before acting" norms.
+Do a dry `bash -n .tunnel.config.sh` to catch syntax errors before declaring done. Then tell the user:
+
+- The config is ready at `.tunnel.config.sh` — they should review it and commit it (`git add
+  .tunnel.config.sh`) so teammates get it too.
+- Anyone with the engine installed (`~/.local/bin/tunnel`) can now run `tunnel start` from the project
+  root — including teammates, once they've pulled this commit.
+- They can run it themselves right now:
+  ```bash
+  tunnel start
+  ```
+
+Don't run `tunnel start` yourself unless the user asks you to, and don't `git commit`/`git add` the
+config file yourself either — creating public tunnel URLs, running long-lived background servers, and
+staging a new file for commit are all actions to let the user trigger themselves, per this project's
+usual "confirm before acting" norms.
