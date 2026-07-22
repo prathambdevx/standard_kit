@@ -116,10 +116,62 @@ not a law.
 ### `utils/view_transition.ts` — View Transitions API helpers
 
 Two helpers: `startStateTransition(update)` crossfades a synchronous same-page state change (e.g. a
-PDP color swap) using `flushSync` + `document.startViewTransition`; `startRouteTransition(navigate)`
-crossfades a route navigation, holding the transition open briefly so the new route can paint. Both
-fall back to an instant update when the API is unsupported or the user prefers reduced motion. Needs
-no extra CSS — the browser's default root crossfade is enough unless you customize `::view-transition`.
+PDP color swap — see `pdp-color-swap/`) using `flushSync` + `document.startViewTransition`;
+`startRouteTransition(navigate)` crossfades a route navigation, holding the transition open briefly so
+the new route can paint. Both fall back to an instant update when the API is unsupported or the user
+prefers reduced motion. Needs no extra CSS for a plain root crossfade — the browser's default is
+enough unless you customize `::view-transition`. `startStateTransition` returns `{ finished }` (a
+promise) — you only need it for the dialog-safe pattern below; ignore it for a normal same-page swap.
+
+#### Dialog-safe usage — calling this from inside an open Radix Dialog (or similar)
+
+If you call `startStateTransition` to update state **while a modal/dialog is open** (e.g. switching a
+tab inside a drawer), you can hit a real bug: **the dialog closes itself** the next time you tap
+another tab. Here's why, and the fix that actually works (a naive fix does not — see below).
+
+**Why it happens:** a browser view transition doesn't restore live, hit-testable rendering the
+instant your update commits — it stays frozen (replaced by a static snapshot) until *every* named
+transition group's own animation finishes, and that's gated on the *slowest* group, not each group
+independently. If your dialog is mid-transition-freeze when a tap lands, the tap falls through to
+whatever's behind the dialog instead of hitting it, and a Radix `DismissableLayer` (or equivalent
+outside-click detection) reads that as an outside interaction and closes the dialog.
+
+**What does NOT fully fix it:** giving the dialog's own overlay/content elements a
+`view-transition-name` and pinning them with `animation: none` (the same technique used for
+persistent chrome like a header/footer during a route crossfade — see the pattern in this repo's
+`components/transitions/motion.css` for that unrelated, safe use case). This stops the dialog from
+*visually* flickering, but it does **not** restore its interactivity sooner — the whole transition
+still doesn't finish until the slowest group (e.g. the tab content's own crossfade) completes, so a
+tap can still fall through during that window even though the dialog looks static and unchanged.
+
+**The fix that works — guard the close, not the timing:**
+
+```tsx
+const isTransitioningRef = useRef(false);
+
+const changeTab = (next: Tab) => {
+  isTransitioningRef.current = true;
+  startStateTransition(() => setActiveTab(next)).finished.finally(() => {
+    isTransitioningRef.current = false;
+  });
+};
+
+<Dialog
+  open={open}
+  onOpenChange={(nextOpen) => {
+    // Swallow a close that fires while our own transition is still in flight —
+    // it's the spurious "tap fell through a frozen dialog" case above, not a
+    // real dismiss intent.
+    if (!nextOpen && isTransitioningRef.current) return;
+    setOpen(nextOpen);
+  }}
+>
+```
+
+This sidesteps needing to reason precisely about browser-specific transition timing — it blocks the
+one symptom that matters (spurious close) regardless of how long the freeze actually lasts. Keep the
+CSS pin too if you have persistent chrome elsewhere that would otherwise flicker during transitions —
+it's complementary, not a substitute.
 
 ### `utils/` — string, time, and phone formatting
 

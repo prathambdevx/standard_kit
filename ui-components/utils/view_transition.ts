@@ -7,8 +7,10 @@ function prefersReducedMotion(): boolean {
   );
 }
 
+type ViewTransition = { finished: Promise<void> };
+
 type ViewTransitionDoc = Document & {
-  startViewTransition?: (cb: () => unknown) => unknown;
+  startViewTransition?: (cb: () => unknown) => ViewTransition;
 };
 
 /**
@@ -17,14 +19,24 @@ type ViewTransitionDoc = Document & {
  * inside the transition so the browser snapshots the new layout and crossfades
  * to it. Falls back to an instant update when unsupported or reduced-motion is
  * on. The browser provides a default root crossfade — no extra CSS needed.
+ *
+ * Returns `{ finished }`. A view transition doesn't restore live, hit-testable
+ * rendering the instant this call returns — it stays frozen until every named
+ * group's own animation completes, which can outlast any single group's
+ * duration. If you call this while a modal/dialog is open (e.g. a Radix
+ * Dialog), a tap during that window can fall through to whatever's behind the
+ * dialog and read as an outside-interaction close. See "Dialog-safe usage" in
+ * the README for the guard pattern that fixes this — pinning the dialog's own
+ * CSS animation to `none` is NOT sufficient on its own, because the whole
+ * transition (not each group independently) gates when interactivity returns.
  */
-export function startStateTransition(update: () => void): void {
+export function startStateTransition(update: () => void): ViewTransition {
   const doc = document as ViewTransitionDoc;
   if (typeof doc.startViewTransition !== 'function' || prefersReducedMotion()) {
     update();
-    return;
+    return { finished: Promise.resolve() };
   }
-  doc.startViewTransition(() => flushSync(update));
+  return doc.startViewTransition(() => flushSync(update));
 }
 
 /**

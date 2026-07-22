@@ -50,3 +50,24 @@
     animation-duration: 1ms;
   }
 }
+
+/* ─── View Transitions: pin persistent chrome ───────────────────────────────
+   When a route or state change crossfades via the browser's View Transitions
+   API (see utils/view_transition.ts), the default root crossfade re-fades
+   EVERYTHING — including chrome that should stay put (a header/footer, an
+   open dialog). Give that element a stable `view-transition-name` (inline
+   style or a Tailwind arbitrary property: `[view-transition-name:my-header]`),
+   then pin it here so it holds its new state with no fade/flicker instead of
+   riding the root crossfade. Rename `persistent-chrome` below to your actual
+   name(s) — this is a template, not a ready-made selector list. */
+::view-transition-group(persistent-chrome) {
+  animation: none;
+}
+::view-transition-old(persistent-chrome) {
+  animation: none;
+  opacity: 0;
+}
+::view-transition-new(persistent-chrome) {
+  animation: none;
+  opacity: 1;
+}

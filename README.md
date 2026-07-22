@@ -25,5 +25,6 @@ conventions differ per repo, but the underlying rules and workflow don't.
 | **`ios-safari-fixes/`** | 6 recurring iOS Safari rendering bugs (SVG clipping, `w-auto` cropping, input auto-zoom, `dvh` viewport jump, scroll-lock, safe-area double-stacking) — a skill doc with real before/after fixes + a static validator that catches 4 of them mechanically |
 | **`fluid-setup/`** | One-time installer for a fluid (`fl-*`) responsive-scaling system on Tailwind v4 — replaces breakpoint-stepped sizes with two-anchor values that glide smoothly between a mobile and desktop design width |
 | **`tunnel/`** | Generic multi-service local-dev + Cloudflare-tunnel orchestrator (one shared engine, install once) plus a skill that scaffolds each new project's config — handles the production-vs-dev-mode hydration gotcha, build-time env baking, and cross-service URL/CORS wiring automatically |
+| **`pdp-color-swap/`** | In-place PDP colour-swap engine — swap the whole product (gallery/price/info) on a swatch tap with no route remount, via TanStack Query + the View Transitions API for the gallery crossfade. Includes two gallery variants (full grid+carousel+lightbox, and a simpler paired-product layout) and the swatch-row UI |
 
 More kits get added here over time as they prove themselves on real projects.
