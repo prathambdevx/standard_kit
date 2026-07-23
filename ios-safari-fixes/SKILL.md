@@ -149,11 +149,11 @@ a parent or child in the same stack already does.
 
 ## 7. SVGs shimmering in place next to a repainting region
 
-> The footer "payment icons flicker" report that first surfaced this turned out to be **two**
-> separate bugs sharing one ticket: a scroll/layout jerk (fixed separately — see the "footer FAQ
-> accordion" entry in `ISSUES.md`) *and* a genuine SVG repaint shimmer, fixed independently with the
-> `transform-gpu` layer promotion below. Both fixes shipped and both are needed together whenever a
-> bottom bar with icons sits below an animating accordion — don't assume fixing one covers the other.
+> First surfaced as a footer "payment icons flicker" report — the SVG payment icon row visibly
+> re-rendering while the FAQ accordion above it animates its height. A scroll/layout-jerk theory was
+> investigated alongside this (see the "footer FAQ accordion" entry in `ISSUES.md`) but turned out
+> not to be a real, reproduced issue — the actual bug was always this repaint shimmer, fixed with the
+> `transform-gpu` layer promotion below.
 
 **The behavior:** when a nearby region repaints continuously (a canvas, a CSS-filter/backdrop
 animation, an element animating a non-composited property), iOS Safari can repaint adjacent
