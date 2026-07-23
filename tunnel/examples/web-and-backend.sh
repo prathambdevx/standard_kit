@@ -105,17 +105,21 @@ PYEOF
 }
 
 # ---- Optional: clear any backend cache that might be serving stale        -
-# ---- "not found" results from before this tunnel session existed ---------
-# Some backends cache upstream responses (Redis, in-memory, etc). If a
-# "not found" / null result ever gets cached without a short TTL, switching
-# upstreams (or publishing content after an earlier miss) can leave the site
-# rendering blank even though the real data now exists. If your backend has
-# this shape, clear the relevant cache keys here. Example for a Redis-backed
-# cache namespaced "mycache:*":
+# ---- data from before this tunnel session existed -------------------------
+# Some backends cache upstream responses (Redis, in-memory, etc), keyed only
+# by handle/id — not by which upstream instance/environment produced them. If
+# you ever point the backend at a different upstream (a different CMS, a
+# different store, a different API base URL) between tunnel sessions, cached
+# entries from the PREVIOUS upstream keep being served indefinitely, since
+# nothing about switching an env var invalidates them. Don't try to enumerate
+# every cache key prefix by hand — that list grows and you will miss one.
+# Simplest fix: just wipe the whole local dev cache DB on every tunnel
+# session. It's a local dev instance, not shared/prod — there's nothing in it
+# worth preserving across a restart, and a full flush guarantees no stale
+# entry survives regardless of what gets cached under it later.
 #
 # flush_backend_cache() {
-#   redis-cli -p 6379 --scan --pattern 'mycache:*' 2>/dev/null \
-#     | xargs -r redis-cli -p 6379 del > /dev/null 2>&1 || true
+#   redis-cli -p 6379 flushdb > /dev/null 2>&1 || true
 # }
 
 post_tunnel_hook() {
