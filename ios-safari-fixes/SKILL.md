@@ -1,6 +1,6 @@
 ---
 name: ios-safari-fixes
-description: iOS Safari renders web UI differently from every other engine in a handful of specific, recurring ways — SVG clipping, viewport-height units, input auto-zoom, scroll-lock, safe-area insets, plus a repaint-shimmer precaution. Apply these rules proactively while writing any component with an SVG, a text input, a full-viewport element, a bottom-fixed bar, a scroll-locking overlay, or SVGs next to a continuously-repainting region, so the bug never ships instead of getting caught in iPhone QA later.
+description: iOS Safari renders web UI differently from every other engine in a handful of specific, recurring ways — SVG clipping, viewport-height units, input auto-zoom, scroll-lock, safe-area insets, a repaint-shimmer precaution, plus a cross-platform address-bar-collapse pattern for full-screen overlays. Apply these rules proactively while writing any component with an SVG, a text input, a full-viewport element, a bottom-fixed bar, a scroll-locking overlay, a full-screen drawer/modal, or SVGs next to a continuously-repainting region, so the bug never ships instead of getting caught in iPhone/Android QA later.
 user-invocable: false
 ---
 
@@ -8,8 +8,9 @@ user-invocable: false
 
 Rules 1–6 were each learned from a real bug that shipped, got caught on a physical iPhone (never
 reproduced in Chrome DevTools' device emulation), and had to be fixed after the fact. Rule 7 is a
-general repaint precaution, not a confirmed shipped bug (see its note). Apply them while writing the
-code so there's nothing to catch later.
+general repaint precaution, not a confirmed shipped bug (see its note). Rule 8 extends rule 4 to
+cover Android Chrome's toolbar-collapse alongside iOS's, for overlays opened mid-scroll. Apply them
+while writing the code so there's nothing to catch later.
 
 ## 1. SVGs clip their own artwork at the viewBox edge
 
@@ -177,6 +178,66 @@ The promotion has no layout effect and is safe to leave on. (Not a lint rule —
 fixed spot, the cause is a reflow or scroll re-clamp (e.g. a `height`-animating accordion changing
 document height while scrolled to the bottom), not a repaint — layer promotion won't touch it. That
 class of bug lives in `ISSUES.md`.
+
+## 8. A full-screen mobile overlay needs to survive the address bar collapsing/expanding on EITHER platform, not just iOS
+
+**The bug — two different failure modes on two different platforms, from the same root cause:**
+Rule 4 says "use `svh`, not `dvh`, for anything that must hold still" — true on iOS, but incomplete.
+`svh` is the **smallest** possible viewport (address bar visible). If a full-screen drawer/overlay
+is opened on **Android Chrome** while the user had already scrolled and the toolbar was collapsed
+(bigger real viewport), the overlay renders shorter than the actual screen — a gap at the bottom,
+page content peeking through. Switching that same overlay to `dvh` "fixes" the Android gap but
+reintroduces the exact iOS jank rule 4 warned about (`dvh` recalculates live as Safari's toolbar
+animates, causing visible jitter). Neither unit alone is correct for a mobile-toolbar-aware overlay
+that has to work on both platforms.
+
+**The fix — measure once in JS, freeze it, never touch it again:**
+
+```ts
+// useLockedViewportHeight.ts — see ui-components kit
+export const useLockedViewportHeight = (active: boolean) => {
+  const [height, setHeight] = useState<number | null>(null);
+  useEffect(() => {
+    if (!active) { setHeight(null); return; }
+    setHeight(window.visualViewport?.height ?? window.innerHeight);
+  }, [active]);
+  return height;
+};
+```
+
+```tsx
+// ❌ svh alone — gap on Android if opened while the toolbar is already collapsed
+<div className="h-svh">
+
+// ❌ dvh alone — no gap, but jitters on iOS as the toolbar animates
+<div className="h-dvh">
+
+// ✅ svh as the pre-measurement fallback, overridden by a one-time JS snapshot once mounted
+const lockedVh = useLockedViewportHeight(open);
+<div
+  className="h-[var(--locked-vh,100svh)]"
+  style={lockedVh ? ({ '--locked-vh': `${lockedVh}px` } as React.CSSProperties) : undefined}
+>
+```
+
+**Why this doesn't reintroduce the `dvh` jank:** the measurement happens exactly once, in an effect
+keyed on `open` — not on scroll, not on resize, not every render. Once `--locked-vh` is set it's a
+static pixel number; there's nothing left for the browser to recompute as the toolbar animates, so
+there's no per-frame layout thrash. This is strictly better than `dvh` for this case: it gets the
+correct height on Android (measured at the real, current viewport) *and* stays static through
+whatever the toolbar does afterward on iOS.
+
+**Why a CSS var, not an inline `height` directly:** an inline `style` always wins over a class
+regardless of media query, so writing `height: 847px` directly on the element would also clobber a
+desktop `lg:h-[...]` override meant to replace the mobile sizing at wider viewports. Routing the
+measured value through `var(--locked-vh, <fallback>)` means the base (mobile) class asks "what's
+this variable right now," while the desktop override class doesn't reference the variable at all
+and simply wins normally via the ordinary Tailwind cascade at its breakpoint.
+
+**Rule: any full-screen mobile overlay/drawer that must not visibly resize should use this pattern,
+not `svh` or `dvh` alone** — plain `svh` is still fine for content that isn't opened as a drawer
+mid-scroll (a static hero, a lightbox reached by page-load rather than a scrolled-then-tapped CTA),
+where the toolbar-already-collapsed-at-open scenario doesn't apply.
 
 ## The validator (`scripts/check-ios-safari.mjs`)
 

@@ -18,6 +18,17 @@ Running log of iOS-Safari-only bugs hit in real projects and how they were fixed
   ✅ max-h-[calc(100svh-150px)]      style={{ maxHeight: 'calc(100svh - 150px)' }}
   ```
 
+- **Full-screen customizer/size-guide drawer breaks when opened while the address bar is already
+  collapsed (Android Chrome) — and the naive `dvh` fix reintroduces the iOS toolbar jitter rule 4
+  exists to prevent.** Reported symptom: opening a full-screen mobile drawer while previously
+  scrolled (Chrome's toolbar hidden) left a gap at the bottom, background page peeking through —
+  because the drawer was sized with `svh` (smallest/toolbar-visible viewport), shorter than the
+  real, current (toolbar-already-collapsed) screen. Confirmed fix: `useLockedViewportHeight` —
+  measure `window.innerHeight` once in JS when the drawer opens, freeze it as a static CSS var
+  (`--locked-vh`), fall back to `100svh` only for the instant before that measurement lands (rule 8
+  in `SKILL.md`). Do NOT "fix" this by switching the base unit to `dvh` — that removes the Android
+  gap but brings back the live-recalculating iOS jank documented in rule 4/the entry below.
+
 - **Bottom bars need `env(safe-area-inset-bottom)` — but the viewport must opt in, and apply it exactly once per chain.** Fixed/sticky bottom bars, sticky CTAs, drawers and bottom-sheet modals must clear the iPhone home indicator, or they sit under it.
   1. The inset only returns real values when the viewport opts into the notch. In Next set it once in the root `layout.tsx`:
      ```ts

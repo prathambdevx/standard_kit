@@ -202,10 +202,18 @@ interface DrawerShellProps {
   onClose: () => void;
   title: string;
   contentClassName?: string; // override width/height etc., e.g. "lg:w-[488px] max-h-[80dvh]"
+  contentStyle?: React.CSSProperties; // e.g. a locked-viewport-height CSS var alongside contentClassName
   children: React.ReactNode;
 }
 
-const DrawerShell = ({ open, onClose, title, contentClassName, children }: DrawerShellProps) => {
+const DrawerShell = ({
+  open,
+  onClose,
+  title,
+  contentClassName,
+  contentStyle,
+  children,
+}: DrawerShellProps) => {
   // Explicit lock tied to the real open state — a backstop alongside Radix's own scroll lock,
   // since nested scroll areas (ScrollArea) can let touch/wheel scroll-chaining escape its shard.
   useBodyScrollLock(open);
@@ -217,7 +225,10 @@ const DrawerShell = ({ open, onClose, title, contentClassName, children }: Drawe
         if (!next) onClose();
       }}
     >
-      <DrawerContent className={cn('max-h-[524px] md:max-h-full', contentClassName)}>
+      <DrawerContent
+        className={cn('max-h-[524px] md:max-h-full', contentClassName)}
+        style={contentStyle}
+      >
         <DrawerHeader className="fl-m-h-[44] border-b divider lg:h-[62px] lg:px-6 lg:py-0">
           <DrawerTitle className={SHELL_TITLE_CLASS}>{title}</DrawerTitle>
           <DrawerCloseButton />
