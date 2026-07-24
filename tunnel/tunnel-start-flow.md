@@ -1,27 +1,62 @@
 # Tunnel Start Flow
 
-> Developer runs `tunnel start`; the bootstrap wrapper makes sure the engine is installed and current, then the engine reads the project's own config, starts each service, tunnels it publicly, and runs any post-start wiring.
+> Developer runs `tunnel start`; the bootstrap wrapper makes sure the engine is installed and current, then the engine reads the project's own config, starts each service, tunnels it publicly, and runs any post-start wiring. A backend service can run as the real app (local upstream) or as a thin reverse proxy (remote upstream) — the config decides which, per session.
 
-## At a glance
+## At a glance — bootstrap + engine (same for both modes)
 
 ```
-You            tunnel/run              ~/.local/bin/tunnel        .tunnel.config.sh         Service + Tunnel
- │                  │                        │                          │                        │
- ├─ tunnel start ──►│                         │                          │                        │
- │                  ├─ ensure cloudflared ────┤                          │                        │
- │                  ├─ ensure python3 ────────┤                          │                        │
- │                  ├─ install/sync engine ──►│  (copy if missing/stale, │                        │
- │                  │                         │   atomic temp+mv)       │                        │
- │                  ├─ exec tunnel "$@" ──────►│                         │                        │
- │                  │                         ├─ source config.tunnel ─►│                         │
- │                  │                         ├─ source .tunnel.config.sh ►│                      │
- │                  │                         │                         │  (SERVICES, ports,      │
- │                  │                         │                         │   start cmds, hooks)    │
- │                  │                         ├─ run_build + start_service + tunnel_service ──────►│
- │                  │                         │                                        (per service, in order)
- │                  │                         ├─ post_tunnel_hook() ───►│                         │
- │                  │                         │                         │  (patch envs, flush cache)│
- │◄─── public tunnel URL(s) printed ──────────┤                         │                        │
+You            tunnel/run              ~/.local/bin/tunnel        .tunnel.config.sh
+ │                  │                        │                          │
+ ├─ tunnel start ──►│                         │                          │
+ │                  ├─ ensure cloudflared ────┤                          │
+ │                  ├─ ensure python3 ────────┤                          │
+ │                  ├─ install/sync engine ──►│  (copy if missing/stale, │
+ │                  │                         │   atomic temp+mv)       │
+ │                  ├─ exec tunnel "$@" ──────►│                         │
+ │                  │                         ├─ source config.tunnel ─►│
+ │                  │                         ├─ source .tunnel.config.sh ►│
+ │                  │                         │                         │  (SERVICES, ports,
+ │                  │                         │                         │   bff_local_upstream_url())
+ │                  │                         │                         │
+ │                  │                         │        ── branches into ONE of the two flows below ──
+```
+
+## At a glance — local backend (no proxy)
+
+```
+.tunnel.config.sh        bff (real app)          Tunnel (cloudflared/ngrok)     Browser
+       │                        │                          │                       │
+       ├─ BFF_INTERNAL_URL is  │                          │                       │
+       │  localhost/127.0.0.1  │                          │                       │
+       ├─ start_service bff ──►│                          │                       │
+       │                        ├─ listens on real port ──►│                       │
+       │                        │                          ├─ tunnel opened ──────►│
+       │                        │                          │                       │
+       │◄─ post_tunnel_hook: patch_backend_cors + flush ───┤                       │
+       │                        │◄─ restart_service bff ───┤                       │
+       │                        │                          │                       │
+       │                        │◄──────────── request ────────────────────────────┤
+       │                        ├─ answers directly (real CORS_ALLOWED_ORIGINS) ───►│
+```
+
+## At a glance — remote upstream (proxy mode)
+
+```
+.tunnel.config.sh    bff-proxy.js (local)    Tunnel (cloudflared/ngrok)    Browser      Remote upstream (dev/UAT)
+       │                     │                        │                       │                  │
+       ├─ BFF_INTERNAL_URL  │                         │                       │                  │
+       │  is a remote URL   │                         │                       │                  │
+       ├─ start_service bff►│ (PROXY_UPSTREAM_URL=remote)                     │                  │
+       │                     ├─ listens on same port ─►│                       │                  │
+       │                     │                         ├─ tunnel opened ──────►│                  │
+       │                     │                         │                       │                  │
+       │◄─ post_tunnel_hook: skips CORS patch + flush ─┤ (proxy handles CORS itself, nothing to patch)
+       │                     │                         │                       │                  │
+       │                     │                         │◄──────── request ────┤                  │
+       │                     │◄──────────────────────────────────────────────┤                  │
+       │                     ├─ forwards server-to-server (no CORS restriction here) ────────────►│
+       │                     │◄──────────────────────────────────────── response ─────────────────┤
+       │                     ├─ answers with permissive CORS (reflects Origin) ─────────────────►│
 ```
 
 ## What kicks it off
@@ -58,25 +93,36 @@ Once the engine is confirmed current, `tunnel/run` hands off via `exec tunnel "$
 
 `tunnel/engine/tunnel`
 
-Finds `.tunnel.config.sh` at the project root (or a personal fallback in `~/.config/tunnel/`), sources the optional gitignored `config.tunnel` first (personal overrides like an ngrok domain), then sources `.tunnel.config.sh` itself — which defines `SERVICES`, each service's port/build/start command, and an optional `post_tunnel_hook`.
+Finds `.tunnel.config.sh` at the project root (or a personal fallback in `~/.config/tunnel/`), sources the optional gitignored `config.tunnel` first (personal overrides like an ngrok domain), then sources `.tunnel.config.sh` itself — which defines `SERVICES`, each service's port/build/start command, and an optional `post_tunnel_hook`. This is also where the local-vs-proxy decision gets made, before any service starts.
 
-**Why this step exists:** The engine has zero project-specific knowledge by design — everything about *this* project's shape lives in one file the project owns.
+**Why this step exists:** The engine has zero project-specific knowledge by design — everything about *this* project's shape, including which mode a backend runs in this session, lives in one file the project owns.
 
-### 5. Each service is built, started, and tunneled
+### 5. The backend's config decides: real app or proxy
+
+`.tunnel.config.sh` — `bff_local_upstream_url()`
+
+Reads the frontend's internal-backend-URL env var:
+
+- **Points at `localhost`/`127.0.0.1`, or the file is missing (fresh clone)** → `bff_start_cmd` runs the real backend app, same as always. See "local backend (no proxy)" above.
+- **Points anywhere else** (a shared dev/UAT deployment) → `bff_start_cmd` runs `tunnel/scripts/bff-proxy.js` instead, with `PROXY_UPSTREAM_URL` set to that remote URL. See "remote upstream (proxy mode)" above.
+
+**Why this step exists:** A tunneled browser can only ever reach your local machine's tunnel origin — never a remote deployment's own (unrelated, fixed-at-deploy-time) CORS allowlist. Routing everything through the local tunnel, real app or proxy, is what makes both cases actually work from a shared link.
+
+### 6. Each service is built, started, and tunneled
 
 `tunnel/engine/tunnel`
 
-For each name in `SERVICES`, in order: run its build command (aborting loudly if the build fails), start it and wait for it to actually respond, then open a public tunnel to its port (cloudflared by default, or ngrok for a persistent static domain) and wait for the tunnel URL to appear.
+For each name in `SERVICES`, in order: run its build command (aborting loudly if the build fails), start it and wait for it to actually respond, then open a public tunnel to its port (cloudflared by default, or ngrok for a persistent static domain) and wait for the tunnel URL to appear. This is identical regardless of which mode the backend is in — the engine doesn't know or care that one session's `bff` is a proxy and another's is the real app.
 
 **Why this step exists:** Order matters when one service's tunnel URL needs to be known before another service builds (e.g. a frontend baking in its backend's public URL).
 
-### 6. `post_tunnel_hook` wires services together
+### 7. `post_tunnel_hook` wires services together — and skips what doesn't apply
 
 `.tunnel.config.sh` (project-defined)
 
-Once every service is up and tunneled, the project's own hook runs — typically patching a frontend's env file with a backend's tunnel URL, patching a backend's CORS allowlist with the frontend's tunnel origin, and flushing any local cache so no stale upstream data survives the switch.
+Once every service is up and tunneled, the project's own hook runs. In **local mode**, it patches the backend's CORS allowlist with the frontend's tunnel origin, flushes any local cache so no stale upstream data survives, and restarts the backend to pick both up. In **proxy mode**, it skips all three — the proxy answers every request with its own permissive CORS headers per-request (no static allowlist file to patch) and holds no local cache to flush, so patching or restarting would be pointless. Either way, the frontend's tunnel-facing env var is always patched to the **local** tunnel URL, never the remote one directly.
 
-**Why this step exists:** Two independently-tunneled services can't know about each other's public URL until both exist — this hook is where that cross-wiring happens, after the fact.
+**Why this step exists:** Two independently-tunneled services can't know about each other's public URL until both exist — this hook is where that cross-wiring happens, after the fact, and only for whichever mode is actually relevant this session.
 
 ## Key files
 
@@ -84,14 +130,8 @@ Once every service is up and tunneled, the project's own hook runs — typically
 |---|---|
 | `tunnel/run` | Bootstrap wrapper — installs/syncs deps + the engine, then delegates |
 | `tunnel/engine/tunnel` | The generic engine — all start/stop/restart/build/tunnel logic |
-| `tunnel/scripts/bff-proxy.js` | Generic reverse proxy, used when a service's config points it at a remote upstream instead of running locally |
-| `.tunnel.config.sh` | Project-specific config — committed, defines `SERVICES` and hooks |
+| `tunnel/scripts/bff-proxy.js` | Generic reverse proxy — runs instead of the real backend app when `.tunnel.config.sh` decides this session needs one |
+| `.tunnel.config.sh` | Project-specific config — committed, defines `SERVICES`, `bff_local_upstream_url()`, and hooks |
 | `config.tunnel` | Personal, gitignored — e.g. your own ngrok static domain |
 | `~/.local/bin/tunnel` | The installed engine binary — shared across every project on this machine |
 | `.tunnel/logs/` | Per-service logs (repo-local, gitignored) — `<name>.log`, `<name>.build.log`, `<name>.tunnel.log` |
-
-## What can go wrong
-
-- **A build fails but the service starts anyway with broken output** — shouldn't happen: the engine aborts immediately on a failed build and points at the exact build log. If you see this, your installed `~/.local/bin/tunnel` is stale (missing the fail-fast fix) — re-run `tunnel/run` to force a re-sync, or `cp tunnel/engine/tunnel ~/.local/bin/tunnel` manually.
-- **`tunnel start` does nothing / reprints the same old URLs** — this is intentional idempotency: if every service is already up and its tunnel alive, `tunnel start` treats it as a no-op. Use `tunnel restart` to force a fresh restart behind the same links, or `tunnel stop` first for a truly clean start.
-- **Frontend can't reach a backend pointed at a remote/shared deployment** — that remote deployment's CORS allowlist doesn't know your ephemeral tunnel origin. The fix is never to point the frontend at the remote URL directly — always patch it to the local tunnel origin and let `tunnel/scripts/bff-proxy.js` forward server-to-server instead (see `README.md`'s "Pointing a service at a remote upstream" section).
