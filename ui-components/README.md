@@ -1,9 +1,14 @@
-# ui-components — atom library + carousel + scroll hook + star-fill math
+# ui-components — atom library + carousel + star-fill math
 
 A set of production UI atoms (Radix-based where interaction/a11y is non-trivial, plain otherwise),
-an embla-powered carousel, a mouse-wheel scroll hook, and a genuinely reusable bit of math (area-
-accurate star-rating fill). Pulled from a real Next.js 15 + Tailwind v4 app — copy in, wire the
-import alias, done.
+an embla-powered carousel, TanStack Query wrapper hooks + provider, and a genuinely reusable bit of
+math (area-accurate star-rating fill). Pulled from a real Next.js 15 + Tailwind v4 app — copy in,
+wire the import alias, done.
+
+Everything here is meant to be dropped in as-is, no per-project judgment call required. A few
+things that don't fit that bar (a decorative parallax effect, Lenis-powered smooth scroll, a
+desktop-only mouse-wheel enhancement) live in the sibling **`extras/`** kit instead — optional,
+copy in only if a project specifically wants that one thing.
 
 ## The core atom rule
 
@@ -39,7 +44,7 @@ workaround (a raw `<button className="...">`, a bare `<a>`, a hand-rolled `<img>
 | `hover_zoom_image.tsx` | Wraps an `Img`/`Picture` to scale up slightly on hover (pairs with a `group` class on the parent) |
 | `star_rating.tsx` | Interactive star picker (hover preview, controlled value) |
 | `carousel.tsx` + `carousel_dots.tsx` | Embla-powered carousel (loop, autoplay, drag) + a paired dot-indicator strip |
-| `edge_scroll/index.tsx` | Scroll-snap row wrapper (native overflow-scroll + touch, NOT embla) for card rails — see the mouse-wheel note below |
+| `edge_scroll/index.tsx` | Scroll-snap row wrapper (native overflow-scroll + touch, NOT embla) for card rails — works standalone; `extras/hooks/useHorizontalScroll.ts` is an optional bolt-on for plain desktop mouse-wheel support, not wired in by default |
 | `ripple.tsx`, `scroll_area.tsx`, `loading_spinner.tsx` | Small shared primitives several atoms above depend on |
 
 ### `icons/` — drop into `src/assets/icons/`
@@ -52,13 +57,14 @@ with the math.
 
 | File | What it is |
 |---|---|
-| `useHorizontalScroll.ts` | Makes a scroll-snap row (like `edge_scroll`) respond to a plain desktop mouse wheel — detects real wheel vs. trackpad, eases via `requestAnimationFrame`, leaves touch/trackpad untouched |
 | `useBodyScrollLock.ts` | Locks page scroll while a drawer/modal is open — pins `<body>` with `position: fixed` (not `overflow: hidden`, a no-op for iOS touch-drag), ref-counted so overlapping locks don't fight each other |
 | `useLockedViewportHeight.ts` | Freezes a full-screen mobile overlay's real viewport height (with a resize re-settle) so it neither gaps on Android nor gets cut off/jitters on iOS — see the `ios-safari-fixes` kit's rule 8 for the full writeup and its scope boundaries |
-| `useParallax.ts` | Scroll-linked vertical translate for a layer inside an `overflow-hidden` frame; honors `prefers-reduced-motion` |
 | `useApiQuery.ts` + `useApiMutation.ts` | Thin TanStack Query wrappers over sensible app-wide defaults (`staleTime`, `gcTime`, retry, optimistic cache patch) — pair with `providers/QueryProvider.tsx` |
 | `useDebouncedValue.ts` | Returns a copy of a value that only updates once it's stayed unchanged for `delayMs` (default 300) |
 | `useMediaQuery.ts` | Live boolean for whether a CSS media query currently matches — for a breakpoint decision made in JS logic, not plain Tailwind `md:`/`lg:` |
+
+`useHorizontalScroll.ts` and `useParallax.ts` moved to the sibling **`extras/`** kit — optional,
+copy in only if a project wants that specific enhancement (see its README for why).
 
 ### `components/transitions/` — reusable animation wrappers, one per file
 
@@ -69,11 +75,14 @@ Drop into `src/components/transitions/`. All of them read the shared motion toke
 |---|---|---|
 | `<RevealUp>` | `reveal_up/` | Entrance on mount: slide up + fade. `animate={false}` for above-the-fold text/hero (an element that starts at `opacity:0` is excluded from LCP measurement) |
 | `<RevealOnScroll>` | `reveal_on_scroll/` | Entrance on scroll-into-view (`IntersectionObserver`-gated, fires once); below-fold content |
-| `<Parallax>` | `parallax/` | Scroll-linked vertical drift for a layer inside an `overflow-hidden` frame (editorial imagery) |
-| `<SmoothScroll>` | `smooth_scroll/` | Mounts Lenis momentum smooth-scrolling for the page's lifetime (peer dep: `lenis`) |
 
-Both `<RevealUp>`/`<RevealOnScroll>` re-trigger via a changing React `key`, and stagger siblings with
-`step={n}` (delays by `n × --motion-delay-step`). `motion.css` includes the reduced-motion collapse.
+Both re-trigger via a changing React `key`, and stagger siblings with `step={n}` (delays by
+`n × --motion-delay-step`). `motion.css` includes the reduced-motion collapse.
+
+`<Parallax>` and `<SmoothScroll>` moved to the sibling **`extras/`** kit — both are a real per-project
+call (does this page want parallax drift? does the site want Lenis's momentum feel?), not a default
+to reach for. They still read this same `motion.css`, so merge it in regardless of whether you copy
+either of them.
 
 ### `providers/ScrollRestoration.tsx` + `utils/scroll_restoration.ts` — back/forward scroll memory
 
@@ -161,25 +170,18 @@ one symptom that matters (spurious close) regardless of how long the freeze actu
 CSS pin too if you have persistent chrome elsewhere that would otherwise flicker during transitions —
 it's complementary, not a substitute.
 
-### `utils/` — string, time, and phone formatting
+### `utils/` — string, time, phone formatting, and the star-fill math
 
-- **`html.ts`** — `stripTags` (plain text from an HTML fragment), `splitBrLines` (split a
-  `<br>`-delimited string into trimmed lines), `stripFontSize` (strip inline `font-size` CSS so your
-  own type scale wins — useful for CKEditor/rich-text output).
-- **`bot.ts`** — `isBotUserAgent(ua)`, a broad search/social/AI-crawler user-agent regex (Google,
-  Bing, GPTBot, ClaudeBot, Perplexity, common social-preview bots, …) for deciding whether a crawler
-  should get the full server-rendered page instead of an interaction-gated shell.
-- **`time_ago.ts`** — `toTimeAgo(iso)`, a relative-time formatter ("3 minutes ago" → "2 days ago" →
-  "4 months ago" → "1 year ago").
-- **`format.ts`** — `formatRating(value)` (one-decimal rating string, correct half-rounding);
-  `formatPhone(phone, country?)` (spaces out a phone number and makes the country code visible —
-  tolerant of a missing `+` prefix, inferring the dial code from the country name via the
-  `country-state-city` peer dep).
-- **`strings.ts`** — `safeJsonParse(raw, fallback)` (never throws); `resolveTemplate(text, value)`
-  (resolves a `{{name || "fallback"}}`-style placeholder — rename the token to match your own
-  templating convention).
+| File | What it is |
+|---|---|
+| `html.ts` | `stripTags` (plain text from an HTML fragment), `splitBrLines` (split a `<br>`-delimited string into trimmed lines), `stripFontSize` (strip inline `font-size` CSS so your own type scale wins — CKEditor/rich-text output) |
+| `bot.ts` | `isBotUserAgent(ua)` — broad search/social/AI-crawler user-agent regex, for deciding whether a crawler gets the full server-rendered page instead of an interaction-gated shell |
+| `time_ago.ts` | `toTimeAgo(iso)` — relative-time formatter ("3 minutes ago" → "2 days ago" → "1 year ago") |
+| `format.ts` | `formatRating(value)` (one-decimal rating string, correct half-rounding); `formatPhone(phone, country?)` (spaces a phone number, makes the country code visible) |
+| `strings.ts` | `safeJsonParse(raw, fallback)` (never throws); `resolveTemplate(text, value)` (resolves a `{{name \|\| "fallback"}}`-style placeholder) |
+| `icons/star_icon.tsx` | `getStarFill(rating, index)` — area-accurate star-rating fill math, not a naive width clip. Worth reading in full — see below |
 
-### The star-rating math (`icons/star_icon.tsx`) — the one worth reading closely
+The star-fill math is the one worth reading closely, not just copying:
 
 `getStarFill(rating, index)` solves a real, non-obvious visual bug: a naive "clip the star SVG at
 `rating% width`" approach looks wrong, because this star's 5-point mass sits left-of-center — a plain
@@ -211,9 +213,10 @@ correct the naive linear clip) is the reusable part, not just this specific star
   `@radix-ui/react-popover` + `react-day-picker` (for `date_picker.tsx`),
   `embla-carousel` + `embla-carousel-react` + `embla-carousel-autoplay`, `clsx` + `tailwind-merge` (via
   `cn` — see the `fluid-setup` kit's `cn.ts` if you don't have one), `next` (Image/Link), `react-dom`
-  (for `Picture`'s `preload()` and `view_transition.ts`'s `flushSync`), `lenis` (for `SmoothScroll`),
-  `country-state-city` (for `format.ts`'s `formatPhone`).
+  (for `Picture`'s `preload()` and `view_transition.ts`'s `flushSync`), `country-state-city` (for
+  `format.ts`'s `formatPhone`). `lenis` is only needed if you also copy `extras/`'s `<SmoothScroll>`.
 - **`edge_scroll` vs `carousel`** are two different patterns for two different jobs — don't conflate
-  them: `edge_scroll` is a scroll-**snap row** (multiple cards visible, native scroll + `useHorizontalScroll`
-  for desktop mouse-wheel support); `carousel` is a one-slide-at-a-time embla carousel (loop, autoplay,
-  drag). Pick based on the design, not habit.
+  them: `edge_scroll` is a scroll-**snap row** (multiple cards visible, native scroll — desktop mouse
+  wheel is an opt-in bolt-on via `extras/hooks/useHorizontalScroll.ts`, not included by default);
+  `carousel` is a one-slide-at-a-time embla carousel (loop, autoplay, drag). Pick based on the
+  design, not habit.
