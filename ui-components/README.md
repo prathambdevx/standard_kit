@@ -50,57 +50,15 @@ with the math.
 
 ### `hooks/` — drop into `src/hooks/`
 
-- **`useHorizontalScroll.ts`** — makes a horizontally-scrolling row (like `edge_scroll`) respond to a
-  **plain desktop mouse wheel** (no trackpad, no touch). Detects a real wheel vs. a trackpad pan via
-  `deltaMode`/`wheelDeltaY`, eases toward the scroll target via `requestAnimationFrame`, disables/
-  re-enables `scroll-snap-type` around the ease, and bails at the scroll edge so page scroll isn't
-  trapped. Wire it into your own scroll-row component the way `edge_scroll/index.tsx` does (merged
-  ref) — it's a hook, not a wrapper component, so it composes into whatever rail markup you have.
-- **`useBodyScrollLock.ts`** — locks page scroll while a drawer/modal is open (used by `drawer.tsx`).
-  Pins `<body>` with `position: fixed` rather than `overflow: hidden` — the latter is a no-op for
-  touch-drag on iOS Safari. Ref-counted (via a DOM attribute, so it survives hot-reload) so
-  overlapping locks — one overlay opening another — don't fight each other. See the
-  `ios-safari-fixes` kit for why this specific technique is required on iOS.
-- **`useLockedViewportHeight.ts`** — snapshots `window.innerHeight`/`visualViewport.height` when a
-  full-screen mobile overlay opens, instead of sizing it with `svh` or `dvh` alone. Fixes two
-  separate bugs: Android Chrome collapses its toolbar on scroll, so an overlay sized with `svh`
-  (smallest/toolbar-visible) opened while already-collapsed renders shorter than the real screen,
-  leaving a gap at the bottom; `dvh` fixes that gap but re-triggers layout continuously as iOS
-  Safari's toolbar animates, causing visible jank. The measurement is applied as a static CSS var
-  (`style={{ '--locked-vh': `${height}px` }}` + `h-[var(--locked-vh,100svh)]`) with nothing left to
-  recalculate for the browser to jitter on. It's not purely one-shot, though: it also re-measures on
-  a `resize` while the overlay stays open, because opening it also locks body scroll
-  (`position: fixed`), and that pin commonly makes iOS Safari snap its toolbar back to expanded a
-  moment *after* the first read — without the listener, the frozen height goes stale and a
-  bottom-pinned footer ends up pushed below the fold. That listener doesn't reintroduce `dvh`'s
-  jank: the overlay's own scroll lock means nothing else can trigger a resize while it's open short
-  of a real device rotation, so it only ever settles that one late correction. See the
-  `ios-safari-fixes` kit's rule 8 for the full writeup, including what this hook deliberately does
-  **not** cover (plain non-overlay content, the on-screen-keyboard interaction, and unrelated bugs
-  like scroll-lock itself or `position:fixed` layer detachment). `drawer.tsx`'s `DrawerShell`
-  exposes a `contentStyle` prop specifically to carry this var through to `DrawerContent` without
-  fighting the desktop `md:`/`lg:` size override (inline `style` always wins over a class, so the
-  var must be scoped, not applied as a raw inline `height`).
-- **`useParallax.ts`** — scroll-linked vertical translate for a layer inside an `overflow-hidden`
-  frame; `speed` is the fraction of the element's own height it travels across a full viewport pass.
-  Honors `prefers-reduced-motion`. Pairs with `components/transitions/parallax/`.
-- **`useApiQuery.ts`** + **`useApiMutation.ts`** — thin, generic TanStack Query wrappers: `useApiQuery`
-  exposes just the options you actually vary per call (`staleTime`, `gcTime`, `retry`, `enabled`,
-  `placeholderData`) over sensible app-wide defaults; `useApiMutation` adds declarative
-  `invalidateQueries` + `updateQueries` (optimistic/direct cache patch) on top of `useMutation`, so a
-  call site rarely needs to touch `queryClient` directly. Pair with `providers/QueryProvider.tsx`,
-  which sets the actual defaults (`staleTime: 5min`, `gcTime: 10min`, `retry: 0` for queries / `1` for
-  mutations, no refetch-on-window-focus) — every component-level hook inherits these unless it
-  overrides them.
-- **`useDebouncedValue.ts`** — returns a copy of a value that only updates after it's stayed
-  unchanged for `delayMs` (default 300). Keeps an input instant while throttling an expensive
-  downstream effect — a search box's own text stays responsive while the network request/filter
-  pass it triggers only fires once typing pauses.
-- **`useMediaQuery.ts`** — a live boolean for whether a CSS media query currently matches, via
-  `window.matchMedia` + its `change` event (re-renders the component when the viewport crosses the
-  breakpoint, not just a one-time check on mount). Reach for this when a breakpoint decision has to
-  happen in JS logic (different copy/text per breakpoint, conditionally mounting a component,
-  choosing an image size) — not for anything expressible as a plain Tailwind `md:`/`lg:` class.
+| File | What it is |
+|---|---|
+| `useHorizontalScroll.ts` | Makes a scroll-snap row (like `edge_scroll`) respond to a plain desktop mouse wheel — detects real wheel vs. trackpad, eases via `requestAnimationFrame`, leaves touch/trackpad untouched |
+| `useBodyScrollLock.ts` | Locks page scroll while a drawer/modal is open — pins `<body>` with `position: fixed` (not `overflow: hidden`, a no-op for iOS touch-drag), ref-counted so overlapping locks don't fight each other |
+| `useLockedViewportHeight.ts` | Freezes a full-screen mobile overlay's real viewport height (with a resize re-settle) so it neither gaps on Android nor gets cut off/jitters on iOS — see the `ios-safari-fixes` kit's rule 8 for the full writeup and its scope boundaries |
+| `useParallax.ts` | Scroll-linked vertical translate for a layer inside an `overflow-hidden` frame; honors `prefers-reduced-motion` |
+| `useApiQuery.ts` + `useApiMutation.ts` | Thin TanStack Query wrappers over sensible app-wide defaults (`staleTime`, `gcTime`, retry, optimistic cache patch) — pair with `providers/QueryProvider.tsx` |
+| `useDebouncedValue.ts` | Returns a copy of a value that only updates once it's stayed unchanged for `delayMs` (default 300) |
+| `useMediaQuery.ts` | Live boolean for whether a CSS media query currently matches — for a breakpoint decision made in JS logic, not plain Tailwind `md:`/`lg:` |
 
 ### `components/transitions/` — reusable animation wrappers, one per file
 
