@@ -10,16 +10,26 @@ mobile QA.
 - **`SKILL.md`** — 8 shipped-bug rules with real before/after code from the actual fix commits: SVG
   viewBox clipping, `w-auto` ignoring hardcoded SVG width/height attributes, sub-16px input
   auto-zoom, `dvh` resizing with the URL bar (use `svh`), `overflow:hidden` not locking scroll on
-  iOS (needs `position:fixed`), `safe-area-inset-bottom` double-stacking, SVGs shimmering next
-  to a continuously-repainting region (`transform-gpu`), and a full-screen overlay that must
-  survive the address bar collapsing/expanding on **either** iOS or Android without gapping (Chrome)
-  or jittering (Safari) — `useLockedViewportHeight`, a one-time JS height snapshot frozen as a CSS
-  var, rather than `svh` or `dvh` alone.
+  iOS (needs `position:fixed`), `safe-area-inset-bottom` double-stacking, SVGs shimmering next to a
+  continuously-repainting region *or* a fixed bar detaching from the viewport after the page grows
+  a lot below the fold (both fixed the same way, `transform-gpu` — two different bugs, same
+  compositing-layer fix), and a full-screen overlay that must survive the address bar
+  collapsing/expanding on **either** iOS or Android without gapping (Chrome), getting cut off
+  (Safari), or jittering (either, if you reach for `dvh`) — `useLockedViewportHeight`, a JS height
+  snapshot frozen as a CSS var and re-settled once via a `resize` listener, rather than `svh` or
+  `dvh` alone. **This is a fix for one specific bug class (sizing a scroll-locked full-screen
+  overlay) — not a general "fixes every viewport issue" hook.** See rule 8's "Scope" section in
+  `SKILL.md` for exactly what it does and doesn't cover (plain in-page content, the on-screen
+  keyboard case, and other non-height bugs like rules 5/7 are explicitly out of scope).
 - **`ISSUES.md`** — a plain running log of iOS-only bugs as they surface; add a bullet each time.
   Currently: the footer-FAQ payment-icon repaint flicker (fixed with `transform-gpu`; a
   scroll/layout-jerk theory was investigated alongside it but wasn't a real reproduced issue), the
   customizer/size-guide drawer gapping on Android when opened mid-scroll (fixed with
-  `useLockedViewportHeight`, rule 8), plus `svh` and safe-area-inset guidance.
+  `useLockedViewportHeight`, rule 8), a follow-up where a single height measurement wasn't enough
+  and the same drawer's footer went off-screen on iOS instead (fixed by adding a `resize` listener
+  to the same hook, rule 8 updated), a `position: fixed` bottom nav detaching and floating mid-page
+  on a real iPhone after PLP infinite-scroll growth (fixed with `transform-gpu`, rule 7 extended),
+  plus `svh` and safe-area-inset guidance.
 - **`css/ios-safari.css`** — the one global CSS fix (rule 1): `svg { overflow: visible }` in
   `@layer base`.
 - **`scripts/check-ios-safari.mjs`** + **`.test.mjs`** — a new static validator (14 tests) that

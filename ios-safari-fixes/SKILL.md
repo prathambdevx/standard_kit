@@ -179,6 +179,18 @@ fixed spot, the cause is a reflow or scroll re-clamp (e.g. a `height`-animating 
 document height while scrolled to the bottom), not a repaint — layer promotion won't touch it. That
 class of bug lives in `ISSUES.md`.
 
+**A second, unrelated bug the same fix happens to stabilize:** a `position: fixed` bottom bar (nav,
+CTA) can "detach" on iOS Safari and render at a stale, mid-page position after the page grows a lot
+below the fold *after* the bar is already mounted — e.g. infinite-scroll pagination appending more
+rows, or a large async DOM swap. WebKit sometimes fails to re-composite the fixed layer at the
+correct viewport-relative position until something forces a re-anchor (a scroll, a resize, or a
+compositing nudge). Invisible in Chrome/Firefox and in device emulation; only shows on a real
+iPhone with real content growth (a short static page won't trigger it). Confirmed fix: the *same*
+`transform-gpu` + `backface-hidden` layer promotion, applied permanently to the fixed bar — this is
+a genuinely different bug (position-drift, not repaint-shimmer) that the same GPU-layer-promotion
+technique happens to also stabilize; don't conflate the two mechanisms even though the fix looks
+identical.
+
 ## 8. A full-screen mobile overlay needs to survive the address bar collapsing/expanding on EITHER platform, not just iOS
 
 **The bug — two different failure modes on two different platforms, from the same root cause:**
@@ -191,15 +203,23 @@ reintroduces the exact iOS jank rule 4 warned about (`dvh` recalculates live as 
 animates, causing visible jitter). Neither unit alone is correct for a mobile-toolbar-aware overlay
 that has to work on both platforms.
 
-**The fix — measure once in JS, freeze it, never touch it again:**
+**The fix — measure in JS, freeze it as a CSS var, and settle one late correction:**
 
 ```ts
-// useLockedViewportHeight.ts — see ui-components kit
+// useLockedViewportHeight.ts — see ui-components/hooks in this kit for the full, current copy
 export const useLockedViewportHeight = (active: boolean) => {
   const [height, setHeight] = useState<number | null>(null);
   useEffect(() => {
     if (!active) { setHeight(null); return; }
-    setHeight(window.visualViewport?.height ?? window.innerHeight);
+    const measure = () => setHeight(window.visualViewport?.height ?? window.innerHeight);
+    measure();
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', measure);
+    window.addEventListener('resize', measure);
+    return () => {
+      vv?.removeEventListener('resize', measure);
+      window.removeEventListener('resize', measure);
+    };
   }, [active]);
   return height;
 };
@@ -212,7 +232,7 @@ export const useLockedViewportHeight = (active: boolean) => {
 // ❌ dvh alone — no gap, but jitters on iOS as the toolbar animates
 <div className="h-dvh">
 
-// ✅ svh as the pre-measurement fallback, overridden by a one-time JS snapshot once mounted
+// ✅ svh as the pre-measurement fallback, overridden by a JS snapshot once mounted
 const lockedVh = useLockedViewportHeight(open);
 <div
   className="h-[var(--locked-vh,100svh)]"
@@ -220,12 +240,23 @@ const lockedVh = useLockedViewportHeight(open);
 >
 ```
 
-**Why this doesn't reintroduce the `dvh` jank:** the measurement happens exactly once, in an effect
-keyed on `open` — not on scroll, not on resize, not every render. Once `--locked-vh` is set it's a
-static pixel number; there's nothing left for the browser to recompute as the toolbar animates, so
-there's no per-frame layout thrash. This is strictly better than `dvh` for this case: it gets the
-correct height on Android (measured at the real, current viewport) *and* stays static through
-whatever the toolbar does afterward on iOS.
+**A single synchronous measurement turned out not to be enough** — a real second bug, caught after
+the first version of this hook shipped (see `ISSUES.md`). Opening a full-screen overlay also locks
+body scroll (rule 5's `position: fixed` pin), and on iOS Safari, pinning `<body>` with
+`position: fixed` commonly snaps the toolbar back to fully expanded a moment *after* the overlay's
+first height read. The real viewport then shrinks below the frozen value, and a bottom-pinned
+footer (e.g. a wizard's Back/Next buttons) ends up pushed below the fold — invisible, unreachable
+without first shrinking the browser chrome again some other way. The fix: also listen for a
+`resize` on `window.visualViewport` (falling back to `window`) while `active`, and re-measure when
+one fires.
+
+**Why this doesn't reintroduce the `dvh` jank:** `dvh`'s jank comes from the browser recomputing a
+*live CSS unit* on every rendered frame while the toolbar animates during active scrolling. This
+hook's resize listener is a JS *event*, not a continuously-recalculating unit — and because the
+overlay's own scroll lock (rule 5) means nothing else can change the viewport while it's open short
+of an actual device rotation, the listener only ever fires that one late toolbar-snap correction (or
+a genuine rotation), never a per-frame stream. Once set, `--locked-vh` is still a static pixel
+number between those rare events — there's no per-frame layout thrash the way `dvh` causes.
 
 **Why a CSS var, not an inline `height` directly:** an inline `style` always wins over a class
 regardless of media query, so writing `height: 847px` directly on the element would also clobber a
@@ -238,6 +269,23 @@ and simply wins normally via the ordinary Tailwind cascade at its breakpoint.
 not `svh` or `dvh` alone** — plain `svh` is still fine for content that isn't opened as a drawer
 mid-scroll (a static hero, a lightbox reached by page-load rather than a scrolled-then-tapped CTA),
 where the toolbar-already-collapsed-at-open scenario doesn't apply.
+
+**Scope — read before assuming this fixes "every viewport bug":** this rule covers exactly one bug
+class — sizing a full-screen, scroll-locked overlay so it neither gaps (Android, toolbar collapsed
+at open) nor gets cut off (iOS, toolbar snaps back after open) nor jitters (either platform, `dvh`).
+It is not a general-purpose viewport fix:
+- It does nothing for content that isn't a scroll-locked overlay (a plain in-page hero, a static
+  full-viewport section) — use plain `svh` there (rule 4), this hook is unnecessary overhead.
+- It's unrelated to rule 5 (scroll-lock mechanism) and rule 7 (repaint shimmer, and the
+  position:fixed viewport-detachment bug documented alongside it) — those are different root
+  causes entirely, not viewport *height* problems, and this hook fixes neither.
+- **On-screen keyboard, not yet decided:** focusing a text input inside the overlay also fires a
+  `visualViewport` resize (the keyboard shrinks the visible area), and this hook's listener *will*
+  re-measure and shrink `--locked-vh` to match. Whether that's the right behavior (the whole sheet
+  compresses to stay above the keyboard) versus deliberately ignoring keyboard-driven resizes (the
+  sheet holds its height and the keyboard just covers the bottom of it) hasn't been decided one way
+  or the other — it's an open edge case, not a confirmed-fixed one. Test explicitly if the overlay
+  you're applying this to has a focusable input.
 
 ## The validator (`scripts/check-ios-safari.mjs`)
 

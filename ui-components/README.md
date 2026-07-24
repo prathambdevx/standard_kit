@@ -61,18 +61,26 @@ with the math.
   touch-drag on iOS Safari. Ref-counted (via a DOM attribute, so it survives hot-reload) so
   overlapping locks — one overlay opening another — don't fight each other. See the
   `ios-safari-fixes` kit for why this specific technique is required on iOS.
-- **`useLockedViewportHeight.ts`** — snapshots `window.innerHeight` once when a full-screen mobile
-  overlay opens, instead of sizing it with `svh` or `dvh` alone. Fixes two separate bugs at once:
-  Android Chrome collapses its toolbar on scroll, so an overlay sized with `svh` (smallest/toolbar-
-  visible) opened while already-collapsed renders shorter than the real screen, leaving a gap at the
-  bottom; `dvh` fixes that gap but re-triggers layout continuously as iOS Safari's toolbar animates,
-  causing visible jank. A one-time JS measurement, applied as a static CSS var
-  (`style={{ '--locked-vh': `${height}px` }}` + `h-[var(--locked-vh,100svh)]`), gets the correct
-  height either way with nothing left to recalculate after mount. `drawer.tsx`'s `DrawerShell`
+- **`useLockedViewportHeight.ts`** — snapshots `window.innerHeight`/`visualViewport.height` when a
+  full-screen mobile overlay opens, instead of sizing it with `svh` or `dvh` alone. Fixes two
+  separate bugs: Android Chrome collapses its toolbar on scroll, so an overlay sized with `svh`
+  (smallest/toolbar-visible) opened while already-collapsed renders shorter than the real screen,
+  leaving a gap at the bottom; `dvh` fixes that gap but re-triggers layout continuously as iOS
+  Safari's toolbar animates, causing visible jank. The measurement is applied as a static CSS var
+  (`style={{ '--locked-vh': `${height}px` }}` + `h-[var(--locked-vh,100svh)]`) with nothing left to
+  recalculate for the browser to jitter on. It's not purely one-shot, though: it also re-measures on
+  a `resize` while the overlay stays open, because opening it also locks body scroll
+  (`position: fixed`), and that pin commonly makes iOS Safari snap its toolbar back to expanded a
+  moment *after* the first read — without the listener, the frozen height goes stale and a
+  bottom-pinned footer ends up pushed below the fold. That listener doesn't reintroduce `dvh`'s
+  jank: the overlay's own scroll lock means nothing else can trigger a resize while it's open short
+  of a real device rotation, so it only ever settles that one late correction. See the
+  `ios-safari-fixes` kit's rule 8 for the full writeup, including what this hook deliberately does
+  **not** cover (plain non-overlay content, the on-screen-keyboard interaction, and unrelated bugs
+  like scroll-lock itself or `position:fixed` layer detachment). `drawer.tsx`'s `DrawerShell`
   exposes a `contentStyle` prop specifically to carry this var through to `DrawerContent` without
   fighting the desktop `md:`/`lg:` size override (inline `style` always wins over a class, so the
-  var must be scoped, not applied as a raw inline `height`). See the `ios-safari-fixes` kit's
-  Rule 8 for the full writeup.
+  var must be scoped, not applied as a raw inline `height`).
 - **`useParallax.ts`** — scroll-linked vertical translate for a layer inside an `overflow-hidden`
   frame; `speed` is the fraction of the element's own height it travels across a full viewport pass.
   Honors `prefers-reduced-motion`. Pairs with `components/transitions/parallax/`.
