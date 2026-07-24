@@ -15,6 +15,16 @@ Audit `<Img>` and `<Picture>` usage to ensure every image loads at the right siz
 
 A 200px thumbnail doesn't need a 1200px source. A full-width hero doesn't need quality 40. The goal is: **clear at every size, fast at every connection.**
 
+## Decide the fit strategy first
+
+Before tuning `width`/`sizes`/`quality`, decide how the image's box is shaped and filled —
+see `rules/image-strategy.md`. Quick summary:
+
+| Image context | Strategy |
+|---|---|
+| Grid/row siblings (product cards, category cards) or a curated banner/hero | Fixed aspect ratio + `object-cover` |
+| Standalone editorial image where showing 100% of the photo matters (no sibling grid) | CMS-derived aspect ratio (from the media's own `width`/`height`) + `object-contain` + a max-h/max-w cap (mobile **and** desktop, set separately) |
+
 ## How the Img Component Works
 
 Before optimizing, understand the pipeline:
@@ -312,3 +322,4 @@ After listing all per-image findings, **end the report with a page-level savings
 - Use conservative estimates — round down, not up
 - Time savings formula: `total_KB / (connection_speed_KBps)` where 4G ~ 625 KB/s, 3G ~ 50 KB/s
 - If a page has many below-fold images (lazy loaded), note that the saving applies as the user scrolls, not all at initial load
+
