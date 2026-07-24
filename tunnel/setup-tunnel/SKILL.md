@@ -80,6 +80,19 @@ Figure out, from the actual repo contents (don't ask the user anything you can d
    relevant cache keys on every restart, the same way `../examples/web-and-backend.sh`'s commented-out
    `flush_backend_cache` does. Don't assume this applies — only add it if the project actually has this
    shape; most projects won't.
+7. **Remote-upstream proxy risk**: only relevant if there's a local backend AND that backend's own env
+   can point at either `localhost` or a real shared deployment (dev/UAT/staging) — check for a "local"
+   vs "dev"/"uat" toggle in the backend's own config the same way you looked for one in step 5. If that
+   pattern exists, the frontend WILL get silently CORS-blocked the moment someone points the backend's
+   env at the remote deployment and tunnels the frontend — that remote deployment's CORS allowlist was
+   fixed at its own deploy time and has never heard of an ephemeral tunnel URL. The fix is
+   `scripts/bff-proxy.js` (ships with this kit, zero dependencies, runs under `node` or `bun`): scaffold
+   `bff_local_upstream_url()` + a conditional `bff_start_cmd` exactly like `../examples/web-and-backend.sh`
+   does, and branch `post_tunnel_hook` on whether it's running (see that example's `$BFF_UPSTREAM` check)
+   since CORS-patching and cache-flushing are meaningless when the local backend is just a proxy. Read
+   `../README.md`'s "Pointing a service at a remote upstream instead of running it locally" section for
+   the full reasoning before wiring this. Don't add this complexity if the project has no such
+   local/remote toggle — most single-environment backends won't need it.
 
 If anything in steps 3–6 is genuinely ambiguous from the repo alone, ask the user — don't fabricate
 plausible-looking values. A wrong port or wrong env-var name produces a config that silently fails

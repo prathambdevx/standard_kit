@@ -257,7 +257,19 @@ run_build() {
   local cmd="${!build_var:-}"
   if [ -n "$cmd" ]; then
     log "Building $name"
-    eval "$cmd" 2>&1 | strip_ansi > "$LOG_DIR/$name.build.log"
+    # pipefail (set at the top of this script) means this correctly reflects
+    # a failure in $cmd itself, not just strip_ansi — without checking it,
+    # a real build failure (compile error, missing env var, whatever) got
+    # silently swallowed and the script went on to start_service anyway,
+    # launching the real start command against a missing/broken build
+    # (e.g. `next start` erroring "Could not find a production build" —
+    # confirmed happening in practice on a teammate's machine).
+    if ! eval "$cmd" 2>&1 | strip_ansi > "$LOG_DIR/$name.build.log"; then
+      echo "✗ Build failed for $name — see $LOG_DIR/$name.build.log for the real error." >&2
+      echo "  Please fix your build, then run \`tunnel start\` again — nothing will start" >&2
+      echo "  or tunnel until $name builds successfully." >&2
+      exit 1
+    fi
   fi
 }
 

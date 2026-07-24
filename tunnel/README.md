@@ -57,7 +57,12 @@ adapting it for an unusual project shape.
 A generic multi-service local-dev + Cloudflare-tunnel orchestrator, plus a Claude Code skill that
 scaffolds a project-specific config for it. Lets you run `tunnel start` in any project and get back
 a public URL that actually works — including the client-side interactivity that a plain `next dev` +
-tunnel combo silently breaks (see "Why production mode" below).
+tunnel combo silently breaks (see "Why production mode" below). A backend can also be pointed at a
+remote upstream (dev/UAT/whatever) instead of running locally — the kit transparently proxies through
+it so CORS never breaks (see "Pointing a service at a remote upstream" below).
+
+For the full start-to-finish sequence — what installs what, what calls what, in order — see
+[`tunnel-start-flow.md`](./tunnel-start-flow.md).
 
 ### What's in here
 
@@ -67,6 +72,7 @@ tunnel combo silently breaks (see "Why production mode" below).
 | `engine/tunnel` | The generic engine — has zero project-specific knowledge; everything project-specific lives in a config file. You normally never call this directly — `run` does it for you. |
 | `setup-tunnel/SKILL.md` | A Claude Code skill: run it once in a new project and it writes that project's config file for you (detects package manager, ports, build/start commands, whether a client-env-var needs rewiring to a backend tunnel, etc). Needs the rest of this `tunnel/` folder alongside it (it copies `../engine/tunnel` for you) — don't lift just the SKILL.md file out on its own. |
 | `examples/` | Two config templates (single-service, and web+backend with cross-URL wiring) to read or copy by hand instead of running the skill. |
+| `scripts/bff-proxy.js` | Generic reverse proxy — see "Pointing a service at a remote upstream" below. Written against Node's built-in `http` module only (no framework-specific API), so it runs unmodified under `node` or `bun`, whichever your project already has. |
 
 ### Install
 
@@ -186,3 +192,45 @@ into another service's client-side env var (e.g. a frontend calling a backend th
 tunnel URL once tunneled), that frontend has to be *rebuilt* after the URL is known — a plain restart
 won't pick up the change. This is exactly what `examples/web-and-backend.sh`'s `post_tunnel_hook` does:
 patch the env, rebuild, then restart.
+
+### Pointing a service at a remote upstream instead of running it locally
+
+Sometimes you don't want the local backend at all — you want your tunneled frontend to hit a real
+shared deployment instead (a dev/UAT API, a staging CMS, whatever). Just pointing the frontend's env
+straight at that remote URL looks like it should work, but it doesn't: **the browser opening your
+tunnel link gets silently CORS-blocked.** That remote deployment's CORS allowlist was fixed at deploy
+time by whoever owns it, and it has no idea about your ephemeral tunnel URL, which changes every
+`tunnel start`. You can't fix this from your machine — you'd need someone to add your tunnel's exact
+origin to that shared deployment's allowlist, which changes every session, so it never actually stays
+allowed.
+
+**The fix: never point the frontend at the remote URL directly. Point it at the local backend's
+tunnel origin, always — and have the local backend act as a thin reverse proxy when that's what you
+actually want.** Concretely:
+
+- The frontend's tunnel-facing env var (`NEXT_PUBLIC_*`/`VITE_*`/whatever) always gets patched to the
+  **local backend's own tunnel URL** — same as if you were running the real app locally. The browser
+  never talks to the remote deployment directly, so its CORS allowlist is irrelevant.
+- What the local backend actually *does* depends on where its own "which upstream am I pointed at"
+  config says: if it's `localhost`, run the real app as normal; if it's a remote URL, run
+  `scripts/bff-proxy.js` instead of the real app, which forwards every request straight through to
+  that remote URL **server-to-server**. CORS only restricts browser-initiated cross-origin requests —
+  a server-to-server forward has no such restriction at all, so it doesn't matter that the remote
+  deployment has never heard of your tunnel origin. The proxy then answers the browser with its own
+  permissive CORS headers (reflecting whatever `Origin` it received), since it's a personal, ephemeral
+  dev tool, not the shared deployment itself.
+
+This means the browser's actual traffic path is always: `browser → your local tunnel → (proxy →) real
+backend`. It's exactly what `examples/web-and-backend.sh` implements — `bff_local_upstream_url()`
+detects which mode to run in by reading the frontend's own "internal backend URL" env var, and
+`bff_start_cmd` branches accordingly. Detection handles the practical edge cases: a missing env file
+(fresh clone) defaults to the real app, `127.0.0.1` counts the same as `localhost`, and quoted values
+are unwrapped before comparing.
+
+Because `patch_backend_cors` (the CORS-allowlist file patch) and any cache-flush hook only matter for
+the *real* app — the proxy never reads that file and has no local cache of its own — `post_tunnel_hook`
+skips both when running in proxy mode, and says so in its output.
+
+`scripts/bff-proxy.js` itself has zero project-specific knowledge (just `PORT` + `PROXY_UPSTREAM_URL`
+env vars) and needs no dependencies — copy it as-is into any project's `tunnel/scripts/` alongside the
+rest of this folder.

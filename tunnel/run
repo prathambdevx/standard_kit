@@ -2,8 +2,9 @@
 # Committed bootstrap wrapper — this is the ONE file every teammate needs to
 # know about. It makes sure cloudflared + the shared `tunnel` engine exist on
 # this machine (installing whichever is missing, the first time anyone runs
-# it — skipped instantly on every run after that), then delegates straight
-# to the engine.
+# it), keeps the installed engine in sync if the committed one in the repo
+# has since changed, then delegates straight to it. All of this is a fast
+# no-op once everything's current.
 #
 # Usage (from the project root, after `git pull`):
 #   ./tunnel/run start
@@ -42,11 +43,39 @@ ensure_python3() {
 ensure_cloudflared
 ensure_python3
 
-if ! command -v tunnel > /dev/null 2>&1; then
-  echo "→ tunnel engine not found on PATH — installing to $ENGINE_DEST"
-  mkdir -p "$HOME/.local/bin"
-  cp "$ENGINE_SRC" "$ENGINE_DEST"
-  chmod +x "$ENGINE_DEST"
+# Copies $ENGINE_SRC into place atomically — via a temp file in the same
+# directory + `mv`, not a direct `cp` onto $ENGINE_DEST. A plain `cp` can be
+# observed mid-write by a concurrent `tunnel/run` invocation (e.g. two
+# terminals both running it right as the engine changes), which could see a
+# truncated/partial file and fail. `mv` within the same filesystem is atomic,
+# so any concurrent reader always sees either the old file or the new one,
+# never a partial write.
+install_engine() {
+  local tmp
+  tmp="$(mktemp "$HOME/.local/bin/tunnel.XXXXXX")"
+  cp "$ENGINE_SRC" "$tmp"
+  chmod +x "$tmp"
+  mv "$tmp" "$ENGINE_DEST"
+}
+
+mkdir -p "$HOME/.local/bin"
+
+# Install if missing, or re-sync if the committed engine has changed since it
+# was last installed — otherwise `run` only ever installs once, and silently
+# keeps using a stale copy forever even after the repo's engine is updated
+# (confirmed happening in practice: a fix landed in tunnel/engine/tunnel on
+# `dev`, a teammate pulled it, but their already-installed ~/.local/bin/tunnel
+# stayed on the old copy since nothing had ever re-synced it). Also repairs
+# the executable bit even when the contents already match — an installed
+# copy that's identical byte-for-byte but somehow lost +x (e.g. a backup/sync
+# tool stripped permissions) would otherwise never get chmod'd, and silently
+# fail with "permission denied" on the next exec.
+if [ ! -f "$ENGINE_DEST" ]; then
+  echo "→ tunnel engine not found — installing to $ENGINE_DEST"
+  install_engine
+elif ! cmp -s "$ENGINE_SRC" "$ENGINE_DEST" || [ ! -x "$ENGINE_DEST" ]; then
+  echo "→ installed tunnel engine is out of date — updating $ENGINE_DEST"
+  install_engine
 fi
 
 case ":$PATH:" in
