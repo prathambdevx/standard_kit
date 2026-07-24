@@ -18,6 +18,7 @@ const PROPS = {
   w: (v) => ({ width: v }),
   h: (v) => ({ height: v }),
   'min-h': (v) => ({ minHeight: v }),
+  'min-w': (v) => ({ minWidth: v }),
   'max-w': (v) => ({ maxWidth: v }),
   basis: (v) => ({ flexBasis: v }),
   p: (v) => ({ padding: v }),

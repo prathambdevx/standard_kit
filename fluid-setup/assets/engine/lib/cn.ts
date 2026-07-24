@@ -21,6 +21,7 @@ const FL_NATIVE: Record<string, string> = {
   w: 'w',
   h: 'h',
   'min-h': 'min-h',
+  'min-w': 'min-w',
   'max-w': 'max-w',
   basis: 'basis',
   p: 'p',
