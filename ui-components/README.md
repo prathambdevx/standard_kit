@@ -62,6 +62,7 @@ with the math.
 | `useApiQuery.ts` + `useApiMutation.ts` | Thin TanStack Query wrappers over sensible app-wide defaults (`staleTime`, `gcTime`, retry, optimistic cache patch) — pair with `providers/QueryProvider.tsx` |
 | `useDebouncedValue.ts` | Returns a copy of a value that only updates once it's stayed unchanged for `delayMs` (default 300) |
 | `useMediaQuery.ts` | Live boolean for whether a CSS media query currently matches — for a breakpoint decision made in JS logic, not plain Tailwind `md:`/`lg:` |
+| `useInView.ts` | `[ref, inView]` via `IntersectionObserver` — gate a lazy fetch/animation on an element actually scrolling near/into view. `rootMargin` (default `300px`) starts it slightly before the element is on screen; `once` (default `true`) disconnects after the first trigger instead of toggling back to `false` on scroll-out |
 
 `useHorizontalScroll.ts` and `useParallax.ts` moved to the sibling **`extras/`** kit — optional,
 copy in only if a project wants that specific enhancement (see its README for why).
