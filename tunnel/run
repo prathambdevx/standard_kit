@@ -53,12 +53,33 @@ ensure_python3
 install_engine() {
   local tmp
   tmp="$(mktemp "$HOME/.local/bin/tunnel.XXXXXX")"
+  # If cp/chmod/mv fails partway through, remove the temp file instead of
+  # leaving a stray tunnel.XXXXXX sitting in ~/.local/bin forever. set -e
+  # aborts the WHOLE SCRIPT (not just this function) on the first failure,
+  # so a RETURN trap wouldn't fire in time — EXIT is what actually runs
+  # during that abort. Cleared right after a successful mv so it doesn't
+  # linger and interfere with anything later in the script.
+  trap 'rm -f "$tmp"' EXIT
   cp "$ENGINE_SRC" "$tmp"
   chmod +x "$tmp"
   mv "$tmp" "$ENGINE_DEST"
+  trap - EXIT
 }
 
 mkdir -p "$HOME/.local/bin"
+
+# If something already exists at ENGINE_DEST as a directory (not a file), a
+# plain `mv` onto it would move the temp file INSIDE that directory instead
+# of replacing it — silently leaving no real engine at ENGINE_DEST and
+# breaking `exec tunnel` below with "Is a directory". Extremely unlikely to
+# happen on its own, but cheap to guard against outright.
+if [ -d "$ENGINE_DEST" ]; then
+  echo "→ $ENGINE_DEST exists as a directory, not the tunnel engine — removing it" >&2
+  rmdir "$ENGINE_DEST" 2>/dev/null || {
+    echo "  Could not remove it automatically (not empty?) — remove $ENGINE_DEST by hand and re-run." >&2
+    exit 1
+  }
+fi
 
 # Install if missing, or re-sync if the committed engine has changed since it
 # was last installed — otherwise `run` only ever installs once, and silently
