@@ -210,6 +210,7 @@ Detailed atom APIs (Button variants, Img/Picture/Alink props) → `component-gen
 | Wrapped a component in `<section className="py-* px-*">` on the page | Step 6 — pages are flat. Padding goes inside the component's root, never on the page wrapper |
 | Inlined a multi-column flex/sticky layout on the page | Step 6 — extract composite layouts into a parent component (e.g. ProductHero) |
 | Used absolute positioning to bleed a background across section boundaries | Use `pb-[Npx]` on the source section to extend its background, then `-mt-[Npx]` on the next section to overlap into that zone. Wrap the two sections in a `gap-0` div so the gap doesn't add extra space. Only use absolute positioning when the bleed is decorative (no layout impact). |
+| Bare `w-[Npx]` element overflows horizontally at 320px viewport | component-generator Accuracy checklist #11 — pair fixed widths with `w-full max-w-[Npx]` (or a fluid width token) unless the value is genuinely small |
 
 ---
 
