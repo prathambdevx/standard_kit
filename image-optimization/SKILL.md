@@ -22,8 +22,20 @@ see `rules/image-strategy.md`. Quick summary:
 
 | Image context | Strategy |
 |---|---|
-| Grid/row siblings (product cards, category cards) or a curated banner/hero | Fixed aspect ratio + `object-cover` |
-| Standalone editorial image where showing 100% of the photo matters (no sibling grid) | CMS-derived aspect ratio (from the media's own `width`/`height`) + `object-contain` + a max-h/max-w cap (mobile **and** desktop, set separately) |
+| Grid/row siblings (product cards, category cards) or a curated banner/hero | Fixed aspect ratio + `object-cover`, set per breakpoint. **The default.** |
+| Standalone image that must show 100% of the photo (no sibling grid) | CMS-derived aspect ratio (from the media's own `width`/`height`) + `object-cover`, size capped on the driving dimension only |
+| Uniform row/grid of assets with wildly varying native ratios (logo strips) | Fixed box on one axis + `auto` on the other + `object-contain` |
+
+Two things people get wrong here:
+
+- **`object-contain` buys nothing once the box ratio is CMS-derived.** With matching
+  ratios, `cover` and `contain` render identically; the fit value only shows up in the
+  null-metadata fallback branch, where `cover` degrades to a mild crop and `contain`
+  degrades to visible bars. Use `cover`.
+- **Never pair a definite width with a `max-height`** (or vice versa) on an
+  `aspect-ratio` box. `aspect-ratio` sizes only the *auto* axis, so a binding cap on the
+  other axis breaks the ratio and reintroduces letterboxing/cropping exactly when it
+  engages. Cap the driving dimension, leave the other `auto`.
 
 ## How the Img Component Works
 

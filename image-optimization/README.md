@@ -4,9 +4,11 @@ Audit + fix skill for Next.js `<Image>`-based components: right `width`/`height`
 not source/CMS size), `sizes` for responsive grids, `quality` by image role, `priority` only above the
 fold. Includes a savings-estimate report format for before/after audits.
 
-Also includes `rules/image-strategy.md` — a separate decision rule for *shape* (fixed aspect ratio +
-`object-cover` for grids/banners vs CMS-derived aspect ratio + `object-contain` + a max-h/max-w cap for
-standalone editorial images), applied before any of the sizing/quality tuning in `SKILL.md`.
+Also includes `rules/image-strategy.md` — a separate decision rule for *shape*: fixed aspect ratio +
+`object-cover` for grids/banners (the default) vs a CMS-derived aspect ratio for standalone
+must-show-100% images, plus the capping rules for `aspect-ratio` boxes and the one case that
+genuinely wants `object-contain` (logo strips). Applied before any of the sizing/quality tuning
+in `SKILL.md`.
 
 ## Adapt before use
 
