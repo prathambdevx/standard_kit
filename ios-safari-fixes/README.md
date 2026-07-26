@@ -19,8 +19,12 @@ mobile QA.
   snapshot frozen as a CSS var and re-settled once via a `resize` listener, rather than `svh` or
   `dvh` alone. **This is a fix for one specific bug class (sizing a scroll-locked full-screen
   overlay) — not a general "fixes every viewport issue" hook.** See rule 8's "Scope" section in
-  `SKILL.md` for exactly what it does and doesn't cover (plain in-page content, the on-screen
-  keyboard case, and other non-height bugs like rules 5/7 are explicitly out of scope). Rule 9 covers
+  `SKILL.md` for exactly what it does and doesn't cover (plain in-page content and other non-height
+  bugs like rules 5/7 are explicitly out of scope). The on-screen-keyboard case, previously listed
+  there as undecided, is now **resolved** and is the most subtle part of rule 8: measure
+  `visualViewport.offsetTop + height`, because `height` alone lets the overlay's bottom edge ride up
+  with iOS's pan and expose the page behind it, while `innerHeight` alone lays the overlay's scroll
+  container out behind the keyboard so it refuses to scroll at all. Rule 9 covers
   a `container-type` element that also carries the grid/flex layout: when a grid child's height is a
   `cqw` value, WebKit mis-resolves the tracks and a stacked `grid-area: 1/1` cell renders as two rows
   on some iPhones — fixed by moving the layout to a nested child so the container keeps only

@@ -83,7 +83,7 @@ with the math.
 | File | What it is |
 |---|---|
 | `useBodyScrollLock.ts` | Locks page scroll while a drawer/modal is open — pins `<body>` with `position: fixed` (not `overflow: hidden`, a no-op for iOS touch-drag), ref-counted so overlapping locks don't fight each other |
-| `useLockedViewportHeight.ts` | Freezes a full-screen mobile overlay's real viewport height (with a resize re-settle) so it neither gaps on Android nor gets cut off/jitters on iOS — see the `ios-safari-fixes` kit's rule 8 for the full writeup and its scope boundaries |
+| `useLockedViewportHeight.ts` | Sizes a full-screen mobile overlay to the real visible viewport (`visualViewport.offsetTop + height`, re-settled on resize *and* visualViewport scroll) so it neither gaps on Android, nor jitters/gets cut off on iOS, nor — with the keyboard open — exposes the page behind it or stops its own panel scrolling. Both terms are load-bearing; see the `ios-safari-fixes` kit's rule 8 for why each one is there and its scope boundaries |
 | `useApiQuery.ts` + `useApiMutation.ts` | Thin TanStack Query wrappers over sensible app-wide defaults (`staleTime`, `gcTime`, retry, optimistic cache patch) — pair with `providers/QueryProvider.tsx` |
 | `useDebouncedValue.ts` | Returns a copy of a value that only updates once it's stayed unchanged for `delayMs` (default 300) |
 | `useMediaQuery.ts` | Live boolean for whether a CSS media query currently matches — for a breakpoint decision made in JS logic, not plain Tailwind `md:`/`lg:` |

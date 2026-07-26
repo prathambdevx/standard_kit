@@ -280,13 +280,41 @@ It is not a general-purpose viewport fix:
 - It's unrelated to rule 5 (scroll-lock mechanism) and rule 7 (repaint shimmer, and the
   position:fixed viewport-detachment bug documented alongside it) — those are different root
   causes entirely, not viewport *height* problems, and this hook fixes neither.
-- **On-screen keyboard, not yet decided:** focusing a text input inside the overlay also fires a
-  `visualViewport` resize (the keyboard shrinks the visible area), and this hook's listener *will*
-  re-measure and shrink `--locked-vh` to match. Whether that's the right behavior (the whole sheet
-  compresses to stay above the keyboard) versus deliberately ignoring keyboard-driven resizes (the
-  sheet holds its height and the keyboard just covers the bottom of it) hasn't been decided one way
-  or the other — it's an open edge case, not a confirmed-fixed one. Test explicitly if the overlay
-  you're applying this to has a focusable input.
+- **On-screen keyboard — RESOLVED, and the answer is neither of the two obvious options.** This was
+  an open edge case here for a while; a real bug closed it. Focusing a text input inside the overlay
+  fires a `visualViewport` resize, and the two candidate behaviours were "shrink the sheet to stay
+  above the keyboard" vs "hold full height and let the keyboard cover the bottom." **Both are
+  broken, each in a different way, and the fix needs a term neither of them has:**
+
+  - **Shrink (`visualViewport.height` alone) → the sheet exposes the page behind it.** The overlay is
+    anchored to the LAYOUT viewport's top, but iOS pans the VISUAL viewport down to reveal the
+    focused input. So the sheet's top stays put while its bottom edge rides *up* with the pan,
+    opening a strip between that edge and the keyboard. If the overlay's wrapper has no background
+    of its own, the live page underneath shows through it.
+  - **Hold full height (`window.innerHeight`) → the sheet stops scrolling.** No gap, but the sheet's
+    scroll container is now laid out *behind* the keyboard. Since its content fits that full height,
+    it believes it has nothing to scroll, swallows the touch, and everything under the keyboard is
+    unreachable. Symptom to recognise: dragging on a non-scrollable part (a hero image) still pans,
+    because iOS falls back to panning the visual viewport, but dragging on the scrollable panel does
+    nothing at all.
+
+  **Correct measurement: `visualViewport.offsetTop + visualViewport.height`** — the distance from the
+  layout viewport's top to the bottom of the visible area. The `height` term keeps the scroll
+  container laid out above the keyboard (so it scrolls); the `offsetTop` term grows the box by
+  exactly the pan distance so its bottom edge stays pinned to the top of the keyboard (so there's no
+  gap). With no keyboard `offsetTop` is 0 and it reduces to the plain full-height case. Listen for
+  visualViewport **`scroll`** as well as `resize` — a pan changes `offsetTop` without changing
+  `height`, so a resize-only listener misses it entirely.
+
+  Two follow-ons worth knowing when you apply this:
+  - **Give the overlay's outermost wrapper an opaque background** even though the inner sheet paints
+    its own. A `fixed inset-0` wrapper is always the full layout viewport while the sheet sizes off
+    the measured value, so any shortfall between them is transparent by default — which is what
+    turns a sizing bug into "the previous page is visible inside my modal."
+  - **Expect the usable area above the keyboard to be small**, and check it. Pinned chrome (header +
+    any fixed preview/media band + footer CTA with its `env(safe-area-inset-bottom)`) can eat most of
+    it, leaving a very narrow scroll window. That's a layout problem, not a viewport one — the fix is
+    collapsing/hiding the non-essential band while the keyboard is up.
 
 ## 9. `container-type` on the same element as `grid` mis-resolves tracks when a child's height is `cqw`
 

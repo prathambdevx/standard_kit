@@ -73,3 +73,23 @@ Running log of iOS-Safari-only bugs hit in real projects and how they were fixed
   `cqw`-derived height and never broke, which isolated the cause. Rejected: `absolute inset-0` for the
   copy (drops it out of row sizing, so long copy overflows the art instead of growing the box) and
   `h-full` on the copy (the symptom is wrong *row placement*, which height-within-a-row cannot fix).
+
+- **Opening the keyboard inside a full-screen overlay pushed its footer buttons up and showed the
+  page behind, in the strip between the buttons and the keyboard.** Reported on a real iPhone in an
+  MTM customizer wizard: tapping the monogram initials input moved the DESIGN/SIZE footer up and the
+  underlying page's content was visible below it. Cause: `useLockedViewportHeight` measured
+  `visualViewport.height`, which the spec shrinks when the keyboard opens — but the overlay is
+  anchored to the LAYOUT viewport's top while iOS pans the VISUAL viewport down to reveal the focused
+  input, so the sheet's bottom edge rode up with the pan. The wrapper (`fixed inset-0`) had no
+  background of its own, so the shortfall was transparent and the live page showed through.
+  **First fix was wrong and worth recording:** switching to `window.innerHeight` closed the gap (it
+  doesn't move for the keyboard) but broke scrolling — at full height the panel's scroll container is
+  laid out behind the keyboard, decides it has nothing to scroll, and swallows the touch, so content
+  under the keyboard became unreachable. Tell-tale: dragging on the non-scrollable hero image still
+  panned (iOS falls back to panning the visual viewport) while dragging on the panel did nothing.
+  Confirmed fix: measure `visualViewport.offsetTop + visualViewport.height` and listen for
+  visualViewport `scroll` as well as `resize` (a pan changes `offsetTop` without changing `height`) —
+  the height term keeps the scroll container above the keyboard, the offsetTop term pins the bottom
+  edge to the keyboard's top (rule 8, "On-screen keyboard" — previously an open edge case, now
+  resolved). Also worth doing: an opaque bg on the outer wrapper, so a future height mismatch
+  degrades to a blank sliver rather than exposing the page.
