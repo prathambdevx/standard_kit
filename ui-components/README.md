@@ -117,7 +117,7 @@ Saves per-URL scroll position, restores it on browser back/forward. The listener
 `ScrollRestoration` just kicks off the one-time init on mount. Drop the provider once near your app
 root (e.g. in the root layout's client-providers wrapper).
 
-The file's header comment maps the whole flow (SAVE → RESTORE → PUBLISH). Seven things in it are
+The file's header comment maps the whole flow (SAVE → RESTORE → PUBLISH). Eight things in it are
 non-obvious and each came from a real "Back didn't land where I left off" bug — don't simplify them
 away:
 
@@ -163,6 +163,12 @@ away:
    skip saving while locked — in the drawer-link flow the navigation *originates* inside the lock, so
    the save still has to happen, just with a truthful number. Any other lock implementation needs the
    same treatment; if yours doesn't record the pre-lock offset anywhere, make it.
+8. **Reject a blank saved entry instead of parsing it as 0.** `Number('')` and `Number('   ')`
+   both evaluate to `0`, not `NaN` — so a corrupt/empty `sessionStorage` value passes a bare
+   `Number.isFinite` check and reads as a legitimate "restore to top" target. Harmless while note 6
+   above was still unfixed (0 was a no-op either way), but once 0 became a real target this would
+   actively scroll the page to the top on a corrupt entry. Trim and reject blank before parsing;
+   reject negatives too, since no real scroll offset is ever negative.
 
 ### `providers/QueryProvider.tsx` — TanStack Query defaults
 

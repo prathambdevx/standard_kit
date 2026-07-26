@@ -81,11 +81,16 @@ function readScrollPosition(): number | null {
   try {
     const value = sessionStorage.getItem(urlKey());
     if (value === null) return null;
-    // Guard the parse. A corrupt entry yields NaN, which is not null so it would sail through
-    // the caller's check and reach every getActiveRestoreTarget() consumer — where `NaN > x` is
-    // always false, so the header would decide it's at the top of the page.
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
+    // Guard the parse. A corrupt entry yields NaN, which is not null so it would sail through the
+    // caller's check and reach every getActiveRestoreTarget() consumer — where `NaN > x` is always
+    // false, so the header would decide it's at the top of the page. Blank is checked separately
+    // because Number('') and Number('   ') are 0, not NaN — an empty entry would otherwise read as
+    // a real "restore to top" target and actively scroll the page there. Negatives can't be a
+    // scroll position at all.
+    const normalized = value.trim();
+    if (normalized === '') return null;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
   } catch {
     return null;
   }

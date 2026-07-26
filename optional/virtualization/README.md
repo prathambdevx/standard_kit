@@ -33,6 +33,7 @@ hand. That's what `useRailWindow` is.
 |---|---|
 | Jank while JS/layout is busy; cost scales with mounted item count (carousel engines, observers, listeners per item) | `useVirtualization` — CPU |
 | Fling stutters with an idle main thread; horizontal scrollers; worse where big layers cluster (near a hero); Layers tab shows fat `overflow-x` rows | `useRailWindow` — GPU |
+| A scroll handler (arrows, progress bar, snap logic) reads `scrollWidth`/`clientWidth`/`offsetWidth` every event; jank scales with item count *within one rail*, worse the denser the on-screen layout | `useScrollerWithArrows` — CPU (forced synchronous layout) |
 | Same component janky in one page position, smooth in another | Almost certainly GPU — it's the *neighbourhood's* total resident memory, not the component |
 
 **Diagnose in 10 minutes** (Safari → Develop → [iPhone] → page): record a **Timeline** during
@@ -82,6 +83,55 @@ your data/props.
 boxes keep the width, the width is the bill — 15 MB of grey costs exactly 15 MB. Also
 pointless: removing images, pausing autoplay, deferring scripts. All content-side; the strip's
 *area* is the cost. (Every one of those was tried. See the case study.)
+
+---
+
+# Tool 1b — `hooks/useScrollerWithArrows.ts` (CPU: stop forcing layout in a scroll handler)
+
+Drives the "scroll left/right" arrow buttons + progress-bar state for any horizontal scroller.
+Ships the fix for a distinct bug found alongside the GPU one above, on the exact same rails:
+the arrow-state handler read `scrollWidth`/`clientWidth` off the scroller **inside its own
+scroll event listener**.
+
+Both are layout-dependent reads. If any style/layout work is pending — and mid-fling it always
+is (lazy images landing, fade transitions running) — the browser must stop and **synchronously
+recompute layout for the whole track** before it can answer. Pay that once per scroll event, on
+a scroller with a dense item list, and it adds up: iOS momentum fires `scroll` dozens of times a
+second.
+
+```ts
+// ❌ Forces a synchronous layout every scroll event
+node.addEventListener('scroll', () => {
+  const { scrollLeft, clientWidth, scrollWidth } = node; // clientWidth/scrollWidth = layout reads
+  ...
+});
+
+// ✅ Cache the layout-dependent values; only scrollLeft is read on scroll
+let clientWidth = node.clientWidth;
+let scrollWidth = node.scrollWidth;
+const apply = () => {
+  const { scrollLeft } = node; // a scroll OFFSET, not a layout read — always free
+  ...
+};
+const remeasure = () => { clientWidth = node.clientWidth; scrollWidth = node.scrollWidth; apply(); };
+node.addEventListener('scroll', apply, { passive: true });
+const observer = new ResizeObserver(remeasure);
+observer.observe(node);
+observer.observe(node.firstElementChild); // see below — required, not optional
+```
+
+**Observing the track (not just the scroller) is required, not optional.** The scroller itself
+is a fixed-width `overflow-x-auto` box — its own border-box does not change when the content
+inside it grows (a card resizing, a breakpoint change, extra items mounting). Node-only
+observation would leave the cached `scrollWidth` stale and the arrow's enabled state wrong. The
+naive version "got away with" reading fresh every time specifically because it never cached
+anything — caching is what makes the track-observer necessary.
+
+This is a **different bug from the GPU one above** — one is a per-event CPU cost (forced
+layout), the other is standing GPU memory (the layer's backing store). Fixing one does nothing
+for the other; this rail needed both. Distinguish them the same way: a Safari Timeline shows
+"Forced Synchronous Layout" entries clustered on scroll for this one, vs an idle main thread
+for the GPU one.
 
 ---
 

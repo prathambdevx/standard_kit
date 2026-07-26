@@ -12,6 +12,7 @@ to use it.
 |---|---|---|
 | **`virtualization/`** — `useVirtualization` (CPU) | Long-list scroll jank caused by per-item cost the browser pays while an item is *mounted* (carousel engines, per-item observers, heavy DOM, decoded bitmaps) | Virtualized content is absent from the server HTML (SEO), transient in-subtree state resets on swap, and one observer per item is added |
 | **`virtualization/`** — `useRailWindow` (GPU) | Horizontal-rail fling jank on iOS with an **idle main thread**: every `overflow-x` scroller holds a private layer rasterised at its full scroll width (~15 MB per 12-card rail at 3×), and several stacked near a hero exceed the phone's GPU budget → tile eviction mid-fling | Items beyond the window are absent from the server HTML; a rail collapses + rewinds to its start when it leaves the viewport |
+| **`virtualization/`** — `useScrollerWithArrows` (CPU) | A distinct bug on the same rails: reading `scrollWidth`/`clientWidth` inside a scroll-event handler forces a synchronous layout recompute on every scroll event, whenever style/layout work is pending (mid-fling it always is) | Must observe the scroller's content/track (not just the scroller) via `ResizeObserver`, or the cached width goes stale |
 
 The folder README opens with the CPU-vs-GPU model and a decision table for which of the two
 tools your jank actually needs — they are **not interchangeable** (a placeholder keeps the box,
