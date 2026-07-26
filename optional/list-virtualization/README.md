@@ -90,13 +90,29 @@ down; this just keeps it dormant on renders where the real markup isn't shown at
 
 ---
 
-## Two rules you cannot break
+## Three rules you cannot break
 
 1. **The ref goes on an element that stays mounted in both branches.** Put it inside the
    conditional subtree and the observer loses its target the moment the item virtualizes out — it
    can then never flip back, so the item stays a grey box forever.
 2. **The placeholder must occupy the same box** (aspect ratio / height) as the real subtree.
    Otherwise the page height changes on every swap and the scroll position jumps under the user.
+3. **Reset any state that describes the unmounted subtree.** State lives on the outer component, so
+   it *survives* a virtualization round-trip while the subtree does not — and a rebuilt library
+   instance starts from scratch. Shipped as a bug: a carousel swiped to slide 3, scrolled away, then
+   scrolled back showed slide 0 while the dots still pointed at 3 and the arrows stepped from the
+   wrong origin. Clear it alongside the teardown:
+
+   ```tsx
+   useEffect(() => {
+     if (!shouldRender) setCurrent(0);
+   }, [shouldRender]);
+   ```
+
+   **Do not instead feed the remembered value back as a library option** (`startIndex`, `initialSlide`
+   …). Many wrappers re-initialise whenever their options change — `embla-carousel-react` calls
+   `reInit()` on any option diff — so a value that updates on every interaction rebuilds the engine
+   on every interaction. That's worse than the desync you're fixing.
 
 ---
 
@@ -105,9 +121,23 @@ down; this just keeps it dormant on renders where the real markup isn't shown at
 **Does:** library instances and their observers/listeners, the subtree's DOM nodes, decoded image
 bitmaps.
 
-**Does not:** image *downloads*. Native `loading="lazy"` already prevents offscreen images from
-being fetched, without removing them from the DOM. Be precise about this when justifying the
-change — it's easy to over-claim.
+**Does not:** image *downloads*, on its own. Native `loading="lazy"` already prevents offscreen
+images from being fetched without removing them from the DOM. Be precise about this when justifying
+the change — it's easy to over-claim. What the window *does* give you is a **bound**: see below.
+
+**Don't double-gate inside the window.** Once virtualization bounds how many items are mounted, a
+second gate limiting content *within* a mounted item is usually solving a problem the window already
+solved — and it costs a visible placeholder step on first interaction. We shipped exactly that (a
+"load one image ahead, the rest on first swipe" counter inside each card) and removed it: the window
+was already the real bound, and the gate just meant every card's first swipe revealed a grey box.
+
+But be honest about the arithmetic, because "the window makes it free" is wrong: **the window bounds
+items, not content per item.** Dropping an inner gate on ~16 mounted cards averaging ~4.4 images each
+means ~70 `<img>` in the DOM instead of ~32. They stay `loading="lazy"`, but carousel slides sit
+inside the viewport's geometric bounds (only clipped by `overflow-hidden`) and browsers largely
+ignore ancestor clipping when deciding to fetch — so expect closer to a 2× rise in requests near the
+viewport. Right trade if the jank is compositing; wrong one if it's network/decode. If it regresses,
+tighten `rootMargin` rather than reinstating the inner gate.
 
 **Survives the swap:** the downloaded file stays in the browser's own HTTP cache, which is why
 scrolling back re-mounts near-instantly despite a genuine teardown. Three separate layers: DOM +

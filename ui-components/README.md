@@ -112,10 +112,38 @@ either of them.
 
 ### `providers/ScrollRestoration.tsx` + `utils/scroll_restoration.ts` — back/forward scroll memory
 
-Saves per-URL scroll position as the user scrolls, restores it on browser back/forward. The listener
-setup lives in `scroll_restoration.ts` (module-scoped, so it survives the shell remounting on a
-suspended page) — `ScrollRestoration` just kicks off the one-time init on mount. Drop the provider
-once near your app root (e.g. in the root layout's client-providers wrapper).
+Saves per-URL scroll position, restores it on browser back/forward. The listener setup lives in
+`scroll_restoration.ts` (module-scoped, so it survives the shell remounting on a suspended page) —
+`ScrollRestoration` just kicks off the one-time init on mount. Drop the provider once near your app
+root (e.g. in the root layout's client-providers wrapper).
+
+The file's header comment maps the whole flow (SAVE → RESTORE → PUBLISH). Five things in it are
+non-obvious and each came from a real "Back didn't land where I left off" bug — don't simplify them
+away:
+
+1. **Three save triggers, not one.** `scroll` (user scrolling), `pagehide` (real unload: tab close,
+   hard refresh), and a capture-phase `click` (in-app SPA navigation, which never fires `pagehide`).
+   Without the click one, a URL visited briefly and left *without scrolling* keeps whatever position
+   an EARLIER visit saved, and a later Back restores that stale value.
+2. **Never save while a restore is running.** The loop re-asserts `scrollTo()` ~90 times and each
+   call emits a scroll event; `scrollY` is still climbing, and is *clamped* while a progressively
+   rendered page is too short to reach the target. Saving then overwrites the good position with a
+   partial one — and if the user clicks away mid-restore, that partial value is what persists.
+3. **Restore re-asserts per frame rather than scrolling once**, because the router may issue its own
+   scroll-to-top just after, and a lazily-rendered page may still be too short to reach the target.
+   Bails immediately on `wheel`/`touchmove`/`keydown`/`click` — real user intent outranks history.
+4. **One loop at a time, cancelled before *every* restore — including the no-target path.** Each
+   `popstate` builds its own `stop()` closure. Cancel must happen before the "nothing saved" early
+   return, or a rapid back/forward into a URL with no stored position leaves the previous loop alive,
+   scrolling the OLD page's offset onto the new page for the rest of its ~1.5s budget. And a loop may
+   only clear the shared target if it still owns it, or an older run wipes a newer run's state.
+5. **`getActiveRestoreTarget()` exists so page chrome doesn't read a lagging `scrollY`.** A header
+   deciding transparent-vs-solid, a hide-on-scroll bottom bar, or a progressive block loader that
+   mounts mid-restore should size against where the page is *going*. Two corollaries: a hide-on-scroll
+   consumer must also skip its logic (and clear pending timers) while a restore is in flight, or the
+   restore's own programmatic scrolling reads as a fast user swipe; and anything that defers
+   below-fold content should treat an in-flight restore as its own "load it now" signal, or the page
+   stays too short for the restore to reach its target.
 
 ### `providers/QueryProvider.tsx` — TanStack Query defaults
 
