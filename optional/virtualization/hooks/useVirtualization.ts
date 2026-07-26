@@ -28,20 +28,30 @@ import { useEffect, useRef, useState } from 'react';
  * placeholder flashes on a fast scroll) at the cost of keeping more instances alive at once;
  * smaller is cheaper but can be out-scrolled. 800px ≈ 2-3 rows of a mobile product grid.
  */
-export function useVirtualization<T extends HTMLElement>(rootMargin = '800px') {
+export function useVirtualization<T extends HTMLElement>(enabled = true, rootMargin = '800px') {
   const ref = useRef<T>(null);
-  const [shouldRender, setShouldRender] = useState(false);
+  const [isIntersecting, setIsIntersecting] = useState(false);
 
   useEffect(() => {
+    if (!enabled) return;
     const el = ref.current;
     if (!el) return;
     const observer = new IntersectionObserver(
-      ([entry]) => setShouldRender(!!entry?.isIntersecting),
+      ([entry]) => setIsIntersecting(!!entry?.isIntersecting),
       { rootMargin },
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, [rootMargin]);
+  }, [enabled, rootMargin]);
 
-  return { ref, shouldRender };
+  // Disabled → always "render for real", and no observer is ever created. A caller with
+  // nothing expensive to reclaim shouldn't pay for one, and — more importantly — must not
+  // swap its subtree at all: an unmount/remount mid-scroll forces a re-decode and a paint,
+  // which is a hitch you'd be *adding*. rootMargin applies to every edge, so this bites
+  // hardest in a horizontally-scrolled rail, where items enter and leave sideways.
+  //
+  // Derived, not seeded into state: `enabled` can flip true → false on an already-mounted item
+  // (a card's data changing to a single image), and the effect above bails before it could
+  // restore anything — leaving the item stuck on its placeholder forever.
+  return { ref, shouldRender: !enabled || isIntersecting };
 }
