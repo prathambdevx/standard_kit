@@ -32,6 +32,7 @@ workaround (a raw `<button className="...">`, a bare `<a>`, a hand-rolled `<img>
 |---|---|
 | `button.tsx` | The `<Button>` atom — variant system (`solid`/`outline`/`white`/`ghost`/`none`), loading state, optional ripple |
 | `img.tsx` | `<Img>` — `next/image` wrapper: custom CDN loader (2x DPR), `showLoader` spinner-gated lazy load, graceful fallback box on missing/failed `src` (never the browser's broken-image icon) |
+| `image_preload.tsx` | `warmImageCache(src, renderWidth)` + `<ImagePreload items skipSrc sizes />` — cache-warms the exact URL `<Img>` will fetch later (hover-intent warm, or an invisible mount for every item except the one currently shown), so a swap to a bigger/different size lands on an already-cached image instead of a fresh fetch. See below. |
 | `picture.tsx` | `<Picture>` — separate mobile/desktop image sources with `preload()` for the LCP candidate |
 | `alink.tsx` | `<Alink>` — `next/link` wrapper with hover/CTA styling + analytics hooks (see Adapt below) |
 | `accordion.tsx` | Radix accordion wrapper (single/multiple, animated open/close) |
@@ -46,6 +47,29 @@ workaround (a raw `<button className="...">`, a bare `<a>`, a hand-rolled `<img>
 | `carousel.tsx` + `carousel_dots.tsx` | Embla-powered carousel (loop, autoplay, drag) + a paired dot-indicator strip |
 | `edge_scroll/index.tsx` | Scroll-snap row wrapper (native overflow-scroll + touch, NOT embla) for card rails — works standalone; `extras/hooks/useHorizontalScroll.ts` is an optional bolt-on for plain desktop mouse-wheel support, not wired in by default |
 | `ripple.tsx`, `scroll_area.tsx`, `loading_spinner.tsx` | Small shared primitives several atoms above depend on |
+
+### `image_preload.tsx` — cache-warming for swappable image views
+
+Two independent exports, both depending only on `<Img>`:
+
+- **`warmImageCache(src, renderWidth, quality?)`** — a plain function, no JSX. Fires
+  `new Image().src = ...` at the exact URL `<Img>`'s loader would request for that
+  `renderWidth` (same 2x-DPR/2560-cap math as `img.tsx`). Call it from `onMouseEnter`
+  on anything that's about to swap to a bigger version of an image already on the
+  page — a thumbnail hovered before opening a lightbox, a card hovered before its
+  detail view. Only needs `src` + the render width; height plays no part in the
+  fetch URL.
+- **`<ImagePreload items skipSrc sizes />`** — mounts an invisible (`size-0`) `<Img>`
+  for every item except `skipSrc`, at each `{width, height}` in `sizes`. Built for a
+  swappable single-image view — a carousel/lightbox/color-swap hero driven by one
+  "current" index, where only one image is ever actually mounted at a time. Mount it
+  anywhere in the tree; it renders nothing visible, it just triggers the fetches so
+  switching `current` later is a cache hit instead of a fresh request.
+
+Both are CDN-URL-scheme aware (Shopify's `?width=` vs a generic `?w=`) — if your
+project's image loader builds URLs differently, update that branch in
+`warmImageCache` to match, since the preload/warm URL and the real fetch URL must
+be byte-identical for the cache hit to actually land.
 
 ### `icons/` — drop into `src/assets/icons/`
 
