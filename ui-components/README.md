@@ -82,7 +82,7 @@ with the math.
 
 | File | What it is |
 |---|---|
-| `useBodyScrollLock.ts` | Locks page scroll while a drawer/modal is open — pins `<body>` with `position: fixed` (not `overflow: hidden`, a no-op for iOS touch-drag), ref-counted so overlapping locks don't fight each other |
+| `useBodyScrollLock.ts` | Locks page scroll while a drawer/modal is open — pins `<body>` with `position: fixed` (not `overflow: hidden`, a no-op for iOS touch-drag), ref-counted so overlapping locks don't fight each other. **Side effect to know: while locked, `window.scrollY` reads 0** — it stashes the true offset on `<html>` as `data-scroll-lock-y`, and anything reading scroll position must prefer that (see scroll_restoration note 7) |
 | `useLockedViewportHeight.ts` | Sizes a full-screen mobile overlay to the real visible viewport (`visualViewport.offsetTop + height`, re-settled on resize *and* visualViewport scroll) so it neither gaps on Android, nor jitters/gets cut off on iOS, nor — with the keyboard open — exposes the page behind it or stops its own panel scrolling. Both terms are load-bearing; see the `ios-safari-fixes` kit's rule 8 for why each one is there and its scope boundaries |
 | `useApiQuery.ts` + `useApiMutation.ts` | Thin TanStack Query wrappers over sensible app-wide defaults (`staleTime`, `gcTime`, retry, optimistic cache patch) — pair with `providers/QueryProvider.tsx` |
 | `useDebouncedValue.ts` | Returns a copy of a value that only updates once it's stayed unchanged for `delayMs` (default 300) |
@@ -117,7 +117,7 @@ Saves per-URL scroll position, restores it on browser back/forward. The listener
 `ScrollRestoration` just kicks off the one-time init on mount. Drop the provider once near your app
 root (e.g. in the root layout's client-providers wrapper).
 
-The file's header comment maps the whole flow (SAVE → RESTORE → PUBLISH). Five things in it are
+The file's header comment maps the whole flow (SAVE → RESTORE → PUBLISH). Seven things in it are
 non-obvious and each came from a real "Back didn't land where I left off" bug — don't simplify them
 away:
 
@@ -144,6 +144,25 @@ away:
    restore's own programmatic scrolling reads as a fast user swipe; and anything that defers
    below-fold content should treat an in-flight restore as its own "load it now" signal, or the page
    stays too short for the restore to reach its target.
+6. **A saved position of `0` is a real target — only `null` is a no-op.** It is tempting to skip the
+   restore when the stored value is 0, on the logic that a page "already opens at the top". It does
+   not. In a single-document SPA the window is still sitting at the offset of the page you just left
+   when `popstate` fires, and `history.scrollRestoration = 'manual'` means nothing resets it but you.
+   Skipping leaves that stale offset in place, clamped into whatever height the incoming page happens
+   to have at that instant — so leaving a page from the top, scrolling the next one deep, and going
+   Back lands you partway down. Worse with deferred/progressive rendering, because the incoming page
+   is at its shortest exactly then. Symptom is "Back goes *almost* to the top", which reads like a
+   rounding bug and is not.
+7. **`window.scrollY` lies whenever a body scroll lock is active** — and `useBodyScrollLock` in this
+   same kit is such a lock. It pins `<body>` with `position: fixed`, so the document is not scrolled
+   at all and `scrollY` reads 0 regardless of where the user actually was. Since the lock fires a
+   scroll event on engaging, and since drawer links are a normal way to navigate, the save path will
+   happily record 0 and destroy the real position: open a hamburger at 1500, tap a link inside it,
+   come Back later, land at the top. Read the offset the lock stashes (`<html>`'s
+   `data-scroll-lock-y`) and fall back to `window.scrollY` only when it is absent. Do **not** just
+   skip saving while locked — in the drawer-link flow the navigation *originates* inside the lock, so
+   the save still has to happen, just with a truthful number. Any other lock implementation needs the
+   same treatment; if yours doesn't record the pre-lock offset anywhere, make it.
 
 ### `providers/QueryProvider.tsx` — TanStack Query defaults
 

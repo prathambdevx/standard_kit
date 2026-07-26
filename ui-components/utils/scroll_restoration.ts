@@ -1,9 +1,10 @@
 // Per-URL scroll-position persistence for browser back/forward navigation.
 //
 // The flow, end to end:
-//   1. SAVE     — record scrollY against the current URL, on three triggers (see
+//   1. SAVE     — record the scroll offset against the current URL, on three triggers (see
 //                 initScrollRestoration): user scrolling, real page unload, and any
-//                 click (the only one that catches an in-app SPA navigation).
+//                 click (the only one that catches an in-app SPA navigation). The offset
+//                 comes from currentScrollY(), not window.scrollY — see why there.
 //   2. RESTORE  — on popstate, read that URL's saved position and scroll to it,
 //                 re-asserting across frames until the page settles (restoreForCurrentUrl).
 //   3. PUBLISH  — while a restore runs, expose its target via getActiveRestoreTarget()
@@ -47,18 +48,29 @@ export function getActiveRestoreTarget(): number | null {
   return activeRestoreTarget;
 }
 
+/** Where the page really is — `window.scrollY` lies while a drawer is open.
+ *
+ *  useBodyScrollLock pins the body with `position: fixed`, so the document isn't scrolled at all
+ *  and `window.scrollY` reads 0 no matter where the user was. It parks the real offset on `<html>`
+ *  first, so read that instead: without it, opening the hamburger at 1500 saves 0 and every later
+ *  back-nav to that page lands at the top. */
+function currentScrollY(): number {
+  const locked = document.documentElement.dataset.scrollLockY;
+  if (locked !== undefined) {
+    const parsed = Number(locked);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return window.scrollY;
+}
+
 /** Persist the window's current scroll position for the active URL. */
 function saveScrollPosition(): void {
-  // Never record mid-restore. The loop below re-asserts scrollTo() ~90 times, and each call
-  // emits a scroll event that lands here — but window.scrollY is still climbing toward the
-  // target, and gets CLAMPED while a progressively-rendered page is too short to reach it.
-  // Saving then would overwrite the good stored position with a partial one, which is how
-  // the restored spot silently degrades (worst case: the user clicks away mid-restore and
-  // the clamped value is what persists). The stored value already IS the target we're
-  // restoring to, so skipping keeps it correct.
+  // Never save mid-restore. Each of the restore loop's ~90 scrollTo() calls fires a scroll event
+  // that lands here, but the page may still be too short to reach the target, so what we'd save is
+  // a clamped half-way value — overwriting the correct position we're restoring TO.
   if (activeRestoreTarget !== null) return;
   try {
-    sessionStorage.setItem(urlKey(), String(window.scrollY));
+    sessionStorage.setItem(urlKey(), String(currentScrollY()));
   } catch {
     // Private mode / quota — scroll restore is best-effort, never block nav.
   }
@@ -69,9 +81,9 @@ function readScrollPosition(): number | null {
   try {
     const value = sessionStorage.getItem(urlKey());
     if (value === null) return null;
-    // Guard the parse: a corrupt entry would otherwise yield NaN, which passes the
-    // null/0 checks below and then propagates into every getActiveRestoreTarget()
-    // consumer (`NaN > threshold` is false, so the header would read as unscrolled).
+    // Guard the parse. A corrupt entry yields NaN, which is not null so it would sail through
+    // the caller's check and reach every getActiveRestoreTarget() consumer — where `NaN > x` is
+    // always false, so the header would decide it's at the top of the page.
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
   } catch {
@@ -86,16 +98,16 @@ function readScrollPosition(): number | null {
  *  may still be too short to reach the target on the first try. Bails the moment the user
  *  scrolls, types, or clicks — whatever they just did outranks where they used to be. */
 function restoreForCurrentUrl(): void {
-  // Supersede any loop still running from an earlier popstate FIRST — before reading the
-  // new target, and crucially before the no-target early return below. A rapid
-  // back/forward into a URL with nothing saved used to skip this, leaving the previous
-  // loop alive to keep scrollTo()-ing the OLD page's offset onto the new page for the
-  // rest of its ~1.5s budget.
+  // Kill any loop from an earlier popstate FIRST — before the early return below, not after.
+  // Fast back/forward into a URL with nothing saved used to return before reaching this, so the
+  // previous loop stayed alive and kept scrolling the OLD page's offset onto the new one.
   cancelActiveRestore?.();
 
   const target = readScrollPosition();
-  // Nothing saved, or saved at the top — either way the page already opens where it should.
-  if (target === null || target === 0) return;
+  // Nothing saved is the ONLY no-op. A saved 0 still has to be scrolled to like any other
+  // position: this is one document, so on Back the window is still sitting at the offset of the
+  // page we just left, and `scrollRestoration = 'manual'` means nobody resets it but us.
+  if (target === null) return;
 
   activeRestoreTarget = target;
   let frame = 0;
