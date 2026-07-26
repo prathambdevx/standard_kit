@@ -55,3 +55,21 @@ Running log of iOS-Safari-only bugs hit in real projects and how they were fixed
      ```
   2. Then pad the bar: `pb-[calc(<base>+env(safe-area-inset-bottom))]` — e.g. `pb-[calc(16px+env(safe-area-inset-bottom))]`. Repo examples: `drawer.tsx`, `mobile_bottom_nav`, `size_guide_drawer`, cart/orders/gift-card sticky bars.
   3. **Apply it once per ancestor chain** — if a wrapper adds `pb-[env(safe-area-inset-bottom)]` and its child also adds `pb-[calc(32px+env(safe-area-inset-bottom))]`, the inset double-stacks and over-pads the bar. Only one element in the stack applies it.
+
+- **A banner's image + copy, stacked in one `grid-area: 1/1` cell, split into TWO rows on some iPhones —
+  copy rendered in a band ABOVE the artwork, overlapping the section above it.** Present from first paint
+  (the reporter never saw it shift on scroll), only on some iPhones, and not reproducible in any desktop
+  browser or in Playwright at any viewport. Cause: the `<section>` declared BOTH `@container`
+  (`container-type: inline-size`) and the layout (`grid grid-cols-1 grid-rows-1`), while its image child's
+  height was `min-h-[calc(80.11cqw+360px)]` — a `cqw` of that same section. Grid track sizing consumes
+  child sizes, so the tracks depended on the very box establishing the container; WebKit doesn't resolve
+  that cycle reliably. **The misleading part: container queries were NOT broken on the device** — every
+  horizontal `cqw` measured correct (copy column width, `cqw` paddings, `max-width`s), only vertical
+  placement was wrong, so "the container works" proves nothing here. Confirmed fix: split them —
+  `@container` stays on the section with margins/position only, `grid` + the row templates move to a
+  nested block-level `<div>` wrapping the children (identical width, so every `cqw` resolves unchanged;
+  a pure restructure with no design values touched) (rule 9 below). Diagnosed without device access by
+  grepping for the combination: the only other component pairing `@container` with `grid` had no
+  `cqw`-derived height and never broke, which isolated the cause. Rejected: `absolute inset-0` for the
+  copy (drops it out of row sizing, so long copy overflows the art instead of growing the box) and
+  `h-full` on the copy (the symptom is wrong *row placement*, which height-within-a-row cannot fix).

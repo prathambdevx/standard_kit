@@ -1,6 +1,6 @@
 ---
 name: ios-safari-fixes
-description: iOS Safari renders web UI differently from every other engine in a handful of specific, recurring ways — SVG clipping, viewport-height units, input auto-zoom, scroll-lock, safe-area insets, a repaint-shimmer precaution, plus a cross-platform address-bar-collapse pattern for full-screen overlays. Apply these rules proactively while writing any component with an SVG, a text input, a full-viewport element, a bottom-fixed bar, a scroll-locking overlay, a full-screen drawer/modal, or SVGs next to a continuously-repainting region, so the bug never ships instead of getting caught in iPhone/Android QA later.
+description: iOS Safari renders web UI differently from every other engine in a handful of specific, recurring ways — SVG clipping, viewport-height units, input auto-zoom, scroll-lock, safe-area insets, a repaint-shimmer precaution, a cross-platform address-bar-collapse pattern for full-screen overlays, plus a CSS-containment/grid interaction that breaks stacked banner layouts. Apply these rules proactively while writing any component with an SVG, a text input, a full-viewport element, a bottom-fixed bar, a scroll-locking overlay, a full-screen drawer/modal, SVGs next to a continuously-repainting region, or a `container-type` element that also carries a grid/flex layout, so the bug never ships instead of getting caught in iPhone/Android QA later.
 user-invocable: false
 ---
 
@@ -9,8 +9,9 @@ user-invocable: false
 Rules 1–6 were each learned from a real bug that shipped, got caught on a physical iPhone (never
 reproduced in Chrome DevTools' device emulation), and had to be fixed after the fact. Rule 7 is a
 general repaint precaution, not a confirmed shipped bug (see its note). Rule 8 extends rule 4 to
-cover Android Chrome's toolbar-collapse alongside iOS's, for overlays opened mid-scroll. Apply them
-while writing the code so there's nothing to catch later.
+cover Android Chrome's toolbar-collapse alongside iOS's, for overlays opened mid-scroll. Rule 9 is a
+CSS-containment/grid interaction that only misrenders on some iPhones. Apply them while writing the
+code so there's nothing to catch later.
 
 ## 1. SVGs clip their own artwork at the viewBox edge
 
@@ -286,6 +287,67 @@ It is not a general-purpose viewport fix:
   sheet holds its height and the keyboard just covers the bottom of it) hasn't been decided one way
   or the other — it's an open edge case, not a confirmed-fixed one. Test explicitly if the overlay
   you're applying this to has a focusable input.
+
+## 9. `container-type` on the same element as `grid` mis-resolves tracks when a child's height is `cqw`
+
+**The bug:** an element that declares `container-type: inline-size` (Tailwind `@container`) AND also
+carries the layout (`display: grid` + `grid-template-*`), where a grid child's HEIGHT is a container
+query unit — the classic banner shape:
+
+```tsx
+{/* ❌ one element is both the query container and the grid */}
+<section className="@container grid grid-cols-1 grid-rows-1">
+  <div className="[grid-area:1/1] min-h-[calc(80.11cqw+360px)]"><Picture … /></div>
+  <div className="[grid-area:1/1] flex flex-col justify-end">…copy…</div>
+</section>
+```
+
+The grid's track sizing consumes its children's sizes, but one of those sizes is derived from the very
+box that establishes the container. Chrome resolves the cycle; WebKit does not do so reliably. Reported
+symptom on a real iPhone: the two `[grid-area:1/1]` children stopped sharing a cell and rendered as
+**two rows — the copy in a band ABOVE the artwork**, overlapping the section above it, from first paint
+(not a scroll-triggered shift). Only some iPhones; correct in every desktop browser and in Playwright
+at every viewport, so neither DevTools emulation nor a headless run catches it.
+
+**The trap that makes this hard to diagnose:** container queries are NOT broken on the affected device.
+Every horizontal `cqw` measures correctly (the copy column was the right width, the `cqw` paddings and
+`max-width`s were all right). Only vertical placement is wrong. So "the container resolves fine" is not
+evidence the layout is safe — check whether any `cqw`-derived HEIGHT feeds a track on the container
+element itself.
+
+**The fix — split the container off the layout. No design values change:**
+
+```tsx
+{/* ✅ container = sizing/position only; grid lives on a nested child */}
+<section className="@container mx-4">
+  <div className="grid grid-cols-1 grid-rows-1">
+    <div className="[grid-area:1/1] min-h-[calc(80.11cqw+360px)]"><Picture … /></div>
+    <div className="[grid-area:1/1] flex flex-col justify-end">…copy…</div>
+  </div>
+</section>
+```
+
+The new wrapper is block-level, so it fills the section's content box — identical width, so every `cqw`
+below resolves to exactly the same number as before. This is a pure restructure, safe to apply blind.
+
+**This is one case of a general law** (see `fluid-setup`'s `fluidize` skill → `references/model.md`):
+a query container can't size against the context it establishes, so the element declaring
+`container-type` carries ONLY sizing/position — never `gap`, `padding`, or the layout — and anything
+reading its size lives on a nested child. Severity escalates by property: a co-located `gap`/`padding`
+yields a quietly wrong NUMBER (~1px, easy to miss); a co-located GRID yields wrong PLACEMENT, which
+reads as a broken page.
+
+**Don't reach for these instead — both were tried and rejected:**
+- `absolute inset-0` on the overlaid child: takes it out of grid flow, so it no longer contributes to
+  row sizing and long copy overflows the art instead of growing the box (a WCAG loss-of-content
+  regression if the stacked-cell pattern exists to prevent exactly that).
+- `h-full` on the overlaid child: the symptom is wrong ROW PLACEMENT; `h-full` only affects height
+  WITHIN a row, so it cannot fix it — and it reintroduces a percentage-height-against-a-content-sized
+  track cycle. Grid's default `align-items: stretch` already gives `justify-end` a full-height box.
+
+Related engine report: WebKit bug 256047 (auto-fit grid tracks collapsing under inline-size
+containment) — same interaction class; the exact row-placement case was not separately confirmed
+against a WebKit bug, so treat the structural law above as the reason, not the citation.
 
 ## The validator (`scripts/check-ios-safari.mjs`)
 

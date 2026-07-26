@@ -7,7 +7,7 @@ mobile QA.
 
 ## What's in here
 
-- **`SKILL.md`** — 8 shipped-bug rules with real before/after code from the actual fix commits: SVG
+- **`SKILL.md`** — 9 shipped-bug rules with real before/after code from the actual fix commits: SVG
   viewBox clipping, `w-auto` ignoring hardcoded SVG width/height attributes, sub-16px input
   auto-zoom, `dvh` resizing with the URL bar (use `svh`), `overflow:hidden` not locking scroll on
   iOS (needs `position:fixed`), `safe-area-inset-bottom` double-stacking, SVGs shimmering next to a
@@ -20,7 +20,11 @@ mobile QA.
   `dvh` alone. **This is a fix for one specific bug class (sizing a scroll-locked full-screen
   overlay) — not a general "fixes every viewport issue" hook.** See rule 8's "Scope" section in
   `SKILL.md` for exactly what it does and doesn't cover (plain in-page content, the on-screen
-  keyboard case, and other non-height bugs like rules 5/7 are explicitly out of scope).
+  keyboard case, and other non-height bugs like rules 5/7 are explicitly out of scope). Rule 9 covers
+  a `container-type` element that also carries the grid/flex layout: when a grid child's height is a
+  `cqw` value, WebKit mis-resolves the tracks and a stacked `grid-area: 1/1` cell renders as two rows
+  on some iPhones — fixed by moving the layout to a nested child so the container keeps only
+  sizing/position.
 - **`ISSUES.md`** — a plain running log of iOS-only bugs as they surface; add a bullet each time.
   Currently: the footer-FAQ payment-icon repaint flicker (fixed with `transform-gpu`; a
   scroll/layout-jerk theory was investigated alongside it but wasn't a real reproduced issue), the
@@ -28,15 +32,18 @@ mobile QA.
   `useLockedViewportHeight`, rule 8), a follow-up where a single height measurement wasn't enough
   and the same drawer's footer went off-screen on iOS instead (fixed by adding a `resize` listener
   to the same hook, rule 8 updated), a `position: fixed` bottom nav detaching and floating mid-page
-  on a real iPhone after PLP infinite-scroll growth (fixed with `transform-gpu`, rule 7 extended),
-  plus `svh` and safe-area-inset guidance.
+  on a real iPhone after PLP infinite-scroll growth (fixed with `transform-gpu`, rule 7 extended), a
+  grid-stacked banner splitting into two rows on some iPhones because one element was both the query
+  container and the grid (fixed by splitting them, rule 9), plus `svh` and safe-area-inset guidance.
 - **`css/ios-safari.css`** — the one global CSS fix (rule 1): `svg { overflow: visible }` in
   `@layer base`.
 - **`scripts/check-ios-safari.mjs`** + **`.test.mjs`** — a new static validator (14 tests) that
-  mechanically catches 4 of the 8 rules (SVG auto-size, input zoom, dvh usage as an info-level
+  mechanically catches 4 of the 9 rules (SVG auto-size, input zoom, dvh usage as an info-level
   nudge, safe-area double-stacking). Rules 1, 5, 7, and 8 are a one-time CSS change, a shared hook, a
   by-eye adjacency call, and a shared hook again (respectively) — nothing left to lint once they're
-  in place.
+  in place. Rule 9 is not wired into the validator yet, though it is mechanically detectable
+  (one element whose class list contains both `@container` and `grid`/`flex`, with a `cqw` in any
+  descendant's `min-h`/`max-h`/`h`) — a worthwhile addition next time the script is touched.
 
 ## Install in a new project
 

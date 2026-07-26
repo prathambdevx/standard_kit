@@ -71,6 +71,11 @@ Write `fl-<prop>-[a,b]` — e.g. `fl-text-[14,16]`, `fl-p-[16,24]`, `fl-h-[44,60
   every band (the scroll affordance). Count-steps at breakpoints are layout-mode changes (allowed).
 - **Art text** (text composed INTO banner imagery) is column-relative, NOT `fl-text` — use
   `fl-art-text-[designPx, columnDesignPx]` and floor the COLUMN, never the element. See model.md.
+- **A `container-type` element carries ONLY sizing/position.** Nothing that reads its size via
+  `cqw`/`cqh`/`cqmin` may also be declared on it — not `gap`, not `padding`, and **not the layout**
+  (`display:grid`/`flex`, `grid-template-*`). Move those to a nested child. Co-locating `grid` with
+  `container-type` while a grid child's height is a `cqw` value mis-resolves the tracks on iOS Safari
+  only (stacked cell → two rows), correct everywhere else. See model.md.
 
 ## Conversion workflow
 

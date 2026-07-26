@@ -78,6 +78,17 @@ the whole group needs.
 - The copy column is a `container-type: inline-size` box. A query container can't size against its own
   established context — never put a property that reads `cqw`/`cqh`/`cqmin` (gap, padding) on the SAME
   element that declares `container-type`; put only sizing/position there, and read its size from a nested child.
+- **The prohibition covers the LAYOUT itself, not just values.** `display: grid`/`flex` and any
+  `grid-template-*` must not sit on the element declaring `container-type` either, because track sizing
+  consumes descendants' sizes — and if a grid child's height is a `cqw` value (a banner image
+  `min-h-[calc(Ncqw + Xpx)]`), the tracks then depend on the box establishing the container. Chrome
+  resolves it; WebKit does not reliably. Observed: an image + copy stacked in one `grid-area: 1/1` cell
+  rendered as TWO rows (copy above the art) on some iPhones only, from first paint, while every
+  horizontal `cqw` on the same device stayed correct — so a correct-looking container is not evidence
+  this is safe. Related engine report: WebKit bug 256047 (auto-fit tracks under inline-size containment).
+  Fix: `container-type` on the outer section (margins/position only), `grid` + tracks on a nested child.
+  Escalation to expect: a co-located `gap`/`padding` yields a quietly wrong NUMBER; a co-located grid
+  yields wrong PLACEMENT — a visibly broken layout, not a sub-pixel drift.
 - CTAs/buttons on the same banner stay on the normal `fl-*` law (tap targets must not shrink with the art).
 
 ## Why a custom plugin (not a clamp library)
