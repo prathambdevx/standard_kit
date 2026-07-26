@@ -13,8 +13,12 @@ type PreloadSize = { width: number; height: number };
 export const warmImageCache = (src: string, renderWidth: number, quality = 75) => {
   const targetWidth = Math.min(Math.round(renderWidth * 2), 2560);
   const sep = src.includes('?') ? '&' : '?';
-  const param = src.includes('cdn.shopify.com') ? 'width' : 'w';
-  new window.Image().src = `${src}${sep}${param}=${targetWidth}&q=${quality}`;
+  const isShopify = src.includes('cdn.shopify.com');
+  // Shopify's image CDN ignores `q=` — `quality=` is the real param (see img.tsx's loader).
+  const url = isShopify
+    ? `${src}${sep}width=${targetWidth}&quality=${quality}`
+    : `${src}${sep}w=${targetWidth}&q=${quality}`;
+  new window.Image().src = url;
 };
 
 /** Mounts an invisible <Img> for every item except `skipSrc`, at each size in

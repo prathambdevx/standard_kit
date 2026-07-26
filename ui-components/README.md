@@ -31,7 +31,7 @@ workaround (a raw `<button className="...">`, a bare `<a>`, a hand-rolled `<img>
 | File | What it is |
 |---|---|
 | `button.tsx` | The `<Button>` atom — variant system (`solid`/`outline`/`white`/`ghost`/`none`), loading state, optional ripple |
-| `img.tsx` | `<Img>` — `next/image` wrapper: custom CDN loader (2x DPR), `showLoader` spinner-gated lazy load, graceful fallback box on missing/failed `src` (never the browser's broken-image icon) |
+| `img.tsx` | `<Img>` — `next/image` wrapper: custom CDN loader (2x DPR; `width=`/`quality=` for Shopify, `w=`/`q=` elsewhere — Shopify's CDN silently ignores `q=`), `showLoader` spinner-gated lazy load, graceful fallback box on missing/failed `src` (never the browser's broken-image icon) |
 | `image_preload.tsx` | `warmImageCache(src, renderWidth)` + `<ImagePreload items skipSrc sizes />` — cache-warms the exact URL `<Img>` will fetch later (hover-intent warm, or an invisible mount for every item except the one currently shown), so a swap to a bigger/different size lands on an already-cached image instead of a fresh fetch. See below. |
 | `picture.tsx` | `<Picture>` — separate mobile/desktop image sources with `preload()` for the LCP candidate |
 | `alink.tsx` | `<Alink>` — `next/link` wrapper with hover/CTA styling + analytics hooks (see Adapt below) |
@@ -66,10 +66,11 @@ Two independent exports, both depending only on `<Img>`:
   anywhere in the tree; it renders nothing visible, it just triggers the fetches so
   switching `current` later is a cache hit instead of a fresh request.
 
-Both are CDN-URL-scheme aware (Shopify's `?width=` vs a generic `?w=`) — if your
-project's image loader builds URLs differently, update that branch in
-`warmImageCache` to match, since the preload/warm URL and the real fetch URL must
-be byte-identical for the cache hit to actually land.
+Both are CDN-URL-scheme aware (Shopify's `?width=&quality=` vs a generic `?w=&q=` —
+Shopify's CDN silently ignores `q=`, `quality=` is the real param, same as `img.tsx`'s
+own loader) — if your project's image loader builds URLs differently, update that
+branch in `warmImageCache` to match, since the preload/warm URL and the real fetch
+URL must be byte-identical for the cache hit to actually land.
 
 ### `icons/` — drop into `src/assets/icons/`
 

@@ -94,7 +94,8 @@ export const Img: FC<ImgProps> = ({
       if (isGif) {
         return imageSrc;
       } else if (isShopify || imageSrc.includes('cdn.shopify.com')) {
-        return `${imageSrc}${separator}width=${optimizedWidth}&q=${imageQuality ?? resolvedQuality}`;
+        // Shopify's image CDN ignores `q=` — `quality=` is the real param
+        return `${imageSrc}${separator}width=${optimizedWidth}&quality=${imageQuality ?? resolvedQuality}`;
       } else {
         return `${imageSrc}${separator}w=${optimizedWidth}&q=${imageQuality ?? resolvedQuality}`;
       }
