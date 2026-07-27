@@ -20,6 +20,9 @@ export const useBodyScrollLock = (active: boolean) => {
     if (count === 0) {
       const scrollY = window.scrollY;
       root.dataset.scrollLockY = String(scrollY);
+      // Which page the offset belongs to — an overlay that navigates as it closes
+      // (search bar, nav drawer link) must not drag the destination page down to it.
+      root.dataset.scrollLockUrl = location.pathname + location.search;
       body.style.position = 'fixed';
       body.style.top = `-${scrollY}px`;
       body.style.left = '0';
@@ -32,6 +35,7 @@ export const useBodyScrollLock = (active: boolean) => {
       const remaining = Number(root.getAttribute(COUNT_ATTR) ?? '1') - 1;
       if (remaining <= 0) {
         const scrollY = Number(root.dataset.scrollLockY ?? '0');
+        const lockedUrl = root.dataset.scrollLockUrl;
         body.style.position = '';
         body.style.top = '';
         body.style.left = '';
@@ -40,7 +44,12 @@ export const useBodyScrollLock = (active: boolean) => {
         body.style.overflow = '';
         root.removeAttribute(COUNT_ATTR);
         delete root.dataset.scrollLockY;
-        window.scrollTo(0, scrollY);
+        delete root.dataset.scrollLockUrl;
+        // Same page → put the user back where they were. Navigated away → leave the new
+        // page at the top; restoring here landed a fresh search deep in the old page's
+        // list, which then tripped the infinite-scroll sentinel and paged it forward.
+        // Search is part of the key: /search?q=a → /search?q=b is a new list too.
+        if (lockedUrl === location.pathname + location.search) window.scrollTo(0, scrollY);
       } else {
         root.setAttribute(COUNT_ATTR, String(remaining));
       }

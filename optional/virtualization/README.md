@@ -25,14 +25,14 @@ costs about the same GPU memory as a 20-product one. But every touch-scrollable
 `overflow-x` region is composited into a **private, untiled sheet rasterised at its full
 scrollable width** — a 12-card rail ≈ 15 MB at 3× DPR, held whether or not it's ever touched.
 Vertical scrolling gets memory management for free; horizontal scrollers must be budgeted by
-hand. That's what `useRailWindow` is.
+hand. That's what `useRailGpuWindow` is.
 
 ## Which tool
 
 | Signal | Tool |
 |---|---|
 | Jank while JS/layout is busy; cost scales with mounted item count (carousel engines, observers, listeners per item) | `useVirtualization` — CPU |
-| Fling stutters with an idle main thread; horizontal scrollers; worse where big layers cluster (near a hero); Layers tab shows fat `overflow-x` rows | `useRailWindow` — GPU |
+| Fling stutters with an idle main thread; horizontal scrollers; worse where big layers cluster (near a hero); Layers tab shows fat `overflow-x` rows | `useRailGpuWindow` — GPU |
 | A scroll handler (arrows, progress bar, snap logic) reads `scrollWidth`/`clientWidth`/`offsetWidth` every event; jank scales with item count *within one rail*, worse the denser the on-screen layout | `useScrollerWithArrows` — CPU (forced synchronous layout) |
 | Same component janky in one page position, smooth in another | Almost certainly GPU — it's the *neighbourhood's* total resident memory, not the component |
 
@@ -44,14 +44,14 @@ resident near one scroll position on a phone is the danger zone.
 
 ---
 
-# Tool 1 — `hooks/useRailWindow.ts` (GPU: shrink the drawn area)
+# Tool 1 — `hooks/useRailGpuWindow.ts` (GPU: shrink the drawn area)
 
 For horizontal rails/carousels of cards. Mounts a window of N items (default 6 ≈ 3
 phone-screens), expands to the full list on the rail's **own** first scroll event, and
 collapses back (rewinding to the start) when the rail leaves the viewport.
 
 ```tsx
-const { containerRef, visibleCount } = useRailWindow(scrollerNode, products.length, 6);
+const { containerRef, visibleCount } = useRailGpuWindow(scrollerNode, products.length, 6);
 
 <section ref={containerRef}>
   <div ref={setScrollerNode} className="no-scrollbar overflow-x-auto">
@@ -73,6 +73,11 @@ Why each piece exists (all learned on device, none speculative):
   its scroll position, and the rewind calls `scrollTo(0)`; both fire `scroll`. Off-screen
   collapse + on-screen-only listener is what prevents an instant re-expand loop.
 - **Analytics fire on the full list**, not the rendered slice.
+- **Expands immediately if the window already has no overflow** (a narrow rail, few enough
+  items, or a wide screen) — otherwise there's no scroll/arrow event to ever trigger the expand
+  above, and the rest would stay unreachable forever. A `ResizeObserver` checks this off the
+  real DOM directly, not any own-side "can it scroll" state (which usually starts optimistic
+  before its first real measurement).
 
 What collapse frees: the out-of-window items' DOM → track shrinks → `scrollWidth` halves →
 the layer's bitmap reallocates smaller (the actual GPU saving) → removed `<img>`s free their

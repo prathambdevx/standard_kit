@@ -1,12 +1,11 @@
-// REFERENCE, not drop-in: the real production integration of the GPU windowing pattern
-// (see hooks/useRailWindow.ts for the distilled reusable hook). Project-specific imports
-// (analytics, commerce session, EdgeScroll, Glood) won't resolve outside its home repo —
-// read it for the wiring: windowed slice + expand-on-own-scroll + collapse-off-viewport,
-// the two merged section observers, and analytics kept on the FULL product list.
+// REFERENCE, not drop-in: the real production integration of ../hooks/useRailGpuWindow.ts.
+// Project-specific imports (analytics, commerce session, EdgeScroll, Glood) won't resolve
+// outside its home repo — read it for the wiring: windowed slice via useRailGpuWindow, the
+// merged section observers, and analytics kept on the FULL product list.
 
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback } from 'react';
 import { CircleArrowLeftIcon } from '@/assets/icons/circle_arrow_left_icon';
 import { CircleArrowRightIcon } from '@/assets/icons/circle_arrow_right_icon';
 import { ProductCard, type ProductCardVariant } from '@/components/common/product_card';
@@ -14,7 +13,7 @@ import { Alink } from '@/components/ui/alink';
 import { Button } from '@/components/ui/button';
 import { EdgeScroll } from '@/components/ui/edge_scroll';
 import { ProductCount } from '@/components/ui/product_count';
-import { useInView } from '@/hooks/useInView';
+import { useRailGpuWindow } from '@/hooks/useRailGpuWindow';
 import { useScrollerWithArrows } from '@/hooks/useScrollerWithArrows';
 import {
   analytics,
@@ -49,7 +48,7 @@ const CARD_STEP: Record<ProductCardVariant, number> = {
 };
 
 // Cards mounted before the rail is first scrolled — ~3 phone-screens of runway, so the swap-in
-// is never visible. See the windowing comment in the component for why this exists.
+// is never visible. See useRailGpuWindow for why this exists.
 const RAIL_WINDOW = 6;
 
 export const ProductRail = ({
@@ -69,39 +68,14 @@ export const ProductRail = ({
   const { node, setRefs, scrollLeft, scrollRight, canScrollLeft, canScrollRight, progress } =
     useScrollerWithArrows<HTMLDivElement>(CARD_STEP[cardVariant]);
 
-  // A composited horizontal scroller's backing store is rasterised at its full SCROLL width, so a
-  // 12-card rail costs ~15MB on a 3x phone whether or not it's ever scrolled — and the homepage
-  // stacks several rails inside WebKit's tile coverage at once (~80MB total, measured), which
-  // pushes iOS into tile eviction mid-fling and reads as scroll jank. Mount a 6-card window
-  // (~3 phone-screens) and grow to the full list on the rail's own first scroll event, so only
-  // the rail actually being touched ever pays full width. Analytics above stay on the full list.
-  const [expanded, setExpanded] = useState(false);
-  const windowed = !expanded && products.length > RAIL_WINDOW;
-  const visibleProducts = windowed ? products.slice(0, RAIL_WINDOW) : products;
-
-  // Two-way visibility for the collapse below — the analytics observer above is once-only.
-  const [inViewRef, railInView] = useInView<HTMLElement>({ once: false });
-
-  useEffect(() => {
-    if (!node || !windowed || !railInView) return;
-    const expand = () => setExpanded(true);
-    // The scroller's own scroll event — fires for touch, wheel and the arrows' scrollBy alike,
-    // and never for vertical page scroll. Attached only while the rail is on screen, so the
-    // collapse's own scrollTo(0) below can never re-trigger it.
-    node.addEventListener('scroll', expand, { once: true, passive: true });
-    return () => node.removeEventListener('scroll', expand);
-  }, [node, windowed, railInView]);
-
-  // Shrink back to the window once the rail leaves the viewport, or expanded rails accumulate:
-  // swipe all three homepage rails to the end and every strip is full-width again — returning to
-  // the first rail then stutters exactly like the unwindowed page (observed on device). Rewinding
-  // scrollLeft alongside keeps the collapse invisible: it happens off screen, and the user
-  // re-enters the rail at its start, where the 6 mounted cards are the ones in view.
-  useEffect(() => {
-    if (railInView || !expanded) return;
-    setExpanded(false);
-    node?.scrollTo({ left: 0 });
-  }, [railInView, expanded, node]);
+  // See useRailGpuWindow: vertical page scroll re-tiles for free on iOS, this rail's own
+  // horizontal scroll doesn't, so we window it to keep its GPU layer small until it's touched.
+  const { containerRef: inViewRef, visibleCount } = useRailGpuWindow<HTMLDivElement, HTMLElement>(
+    node,
+    products.length,
+    RAIL_WINDOW,
+  );
+  const visibleProducts = products.slice(0, visibleCount);
 
   const firstName = commerce.useSession((s) => s.customer?.firstName);
   const heading = resolveTemplate(rawHeading, firstName);
