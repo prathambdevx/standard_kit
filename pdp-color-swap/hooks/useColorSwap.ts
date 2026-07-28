@@ -49,7 +49,9 @@ function preloadHeroImage(url: string | undefined): Promise<void> {
   if (!url) return Promise.resolve();
   const width = heroImageWidth();
   const sep = url.includes('?') ? '&' : '?';
-  const sized = url.includes('cdn.shopify.com') ? `${url}${sep}width=${width}&q=75` : url;
+  // `quality=`, not `q=` — Shopify's CDN ignores `q=`, so that spelling would warm a URL
+  // the <Img> never requests, and the cache (keyed on the exact URL) would miss every time.
+  const sized = url.includes('cdn.shopify.com') ? `${url}${sep}width=${width}&quality=75` : url;
   return new Promise<void>((resolve) => {
     let settled = false;
     const finish = () => {
