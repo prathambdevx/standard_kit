@@ -39,6 +39,61 @@ above it. If you build a different gallery, keep this constraint: whatever shows
 "current" image needs a stable key you bump on swap, or the transition will crossfade a
 half-initialized carousel mid-animation.
 
+## Pending vs loaded colour (read this before gating anything on the active colour)
+
+The context hands you **two** different answers to "which colour?", and they disagree for the
+whole duration of a swap:
+
+| Value | Means | Use it for |
+|---|---|---|
+| `activeHandle` (`pendingHandle ?? product.handle`) | the colour the user **tapped** — set immediately, before the fetch resolves | highlight-only state (the swatch ring), so the tap feels instant |
+| `product.handle` | the colour **actually on screen** — the product whose data is currently rendered | anything that decides **whether to render** |
+
+The gap is real time, not a frame: the swap fetches the sibling product *and* preloads its
+hero image (up to a 1.2s cap) before committing. Throughout that window `activeHandle` is
+already the new colour while every view-model derived from the product — the swatch list, the
+price, the gallery items — is still the old one. So any test that compares product-derived
+data against `activeHandle` is comparing two different points in time, and can flip to a
+wrong answer until the swap lands.
+
+Concretely, this is how an info panel should decide whether to show its colour row:
+
+```tsx
+// The colour actually on screen — not the tapped one. On tap, activeHandle is already the
+// new colour while data.colors is still the old product's list; comparing those two would
+// hide this row (and its divider) until the new data arrives.
+const loadedHandle = colorSwap?.product.handle ?? currentHandle;
+const hasOtherColor = data.colors.some((c) => c.name !== loadedHandle);
+```
+
+Getting this wrong produced a real bug worth knowing: with `activeHandle` in that comparison,
+a two-colour family whose variant metafield omitted the product itself had a swatch list
+holding exactly one entry — the sibling, which *is* the colour just tapped. So "is there
+another colour to switch to?" answered no, and the row **plus its divider** unmounted for the
+entire fetch and then came back, sliding everything below it (size grid, add-to-bag) up and
+back down. Products that include themselves in the list never hit it, which is what makes it
+look product-specific and easy to misdiagnose as a gallery/transition problem.
+
+**`usePathname()` is not a substitute for either.** The swap syncs the URL with a raw
+`history.replaceState`, which the framework router never observes — so the pathname keeps
+reporting the colour the page first loaded with. Keep it only as the fallback for when the
+component renders outside the provider (as `?? currentHandle` above does).
+
+### Data expectation: a product should list itself among its colours
+
+This bundle assumes each product's colour list includes **the whole family, the product
+itself included**. Where a product only cross-references its siblings, two things degrade
+even with the fix above:
+
+1. **No selected ring ever renders** — `color_swatch_grid` locates the current colour with
+   `colors.findIndex(...)`, which is permanently `-1` when the product isn't in its own list.
+2. **One visible swatch never prefetches** — `INITIAL_PREFETCH_LIMIT` is 4 against 5 visible
+   slots precisely because one slot is normally the product you're on. With self omitted all
+   5 slots are siblings, so the 5th stays cold and its swap pays full fetch latency.
+
+Both are data fixes in whatever links your colour family together, not code fixes — but
+check them first if the ring looks broken on a subset of products.
+
 ## What's project-specific — adapt before copying in
 
 This was pulled from a Shopify + custom BFF storefront, so it carries some assumptions:
