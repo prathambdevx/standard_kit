@@ -29,12 +29,15 @@
 #                                           #   port-based kill, which always runs)
 #     <name>_tunnel_provider="ngrok"        # optional — default is "cloudflared"
 #                                           #   (free, but its URL changes every run).
-#                                           #   Set to "ngrok" for a persistent free
-#                                           #   static domain instead (one per ngrok
-#                                           #   account) — requires <name>_ngrok_domain
-#                                           #   and `ngrok config add-authtoken` already
-#                                           #   run once on this machine.
-#     <name>_ngrok_domain="foo.ngrok-free.app"  # required if tunnel_provider=ngrok
+#                                           #   Set to "ngrok" instead — needs
+#                                           #   `ngrok config add-authtoken` already
+#                                           #   run once on this machine, either way:
+#     <name>_ngrok_domain="foo.ngrok-free.app"  # optional — a persistent free static
+#                                                #   domain (one per ngrok account).
+#                                                #   Omit it and ngrok still runs, on
+#                                                #   a fresh randomly-assigned URL each
+#                                                #   time (same as cloudflared's model,
+#                                                #   just relaying WebSockets reliably).
 #
 #   Optional hook, called once after every service is running and tunneled:
 #     post_tunnel_hook() { ... }
@@ -195,7 +198,9 @@ kill_tunnel_for() {
   local port_var="${name}_port"
   local port="${!port_var}"
   if [ "$(tunnel_provider_for "$name")" = "ngrok" ]; then
-    pkill -f "ngrok http .* $port( |$)" 2>/dev/null || true
+    # Matches both forms: a static domain (`ngrok http --url=<domain> <port>`)
+    # and an ephemeral tunnel (`ngrok http <port>`, no --url).
+    pkill -f "ngrok http .*$port( |$)" 2>/dev/null || true
   else
     pkill -f "cloudflared tunnel --url http://localhost:$port" 2>/dev/null || true
   fi
@@ -228,6 +233,13 @@ wait_for_log_pattern() {
 
 extract_tunnel_url() {
   grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" "$1" 2>/dev/null | head -1
+}
+
+# An ephemeral (no --url) ngrok tunnel logs its randomly-assigned public URL
+# on the same "started tunnel" line as `url=https://...` (logfmt, via
+# --log=stdout) — pull it out instead of assuming a known static domain.
+extract_ngrok_url() {
+  grep -oE "url=https://[^ ]+" "$1" 2>/dev/null | head -1 | sed 's/^url=//'
 }
 
 env_name_for() {
@@ -347,13 +359,18 @@ tunnel_service() {
   if [ "$provider" = "ngrok" ]; then
     local domain_var="${name}_ngrok_domain"
     local domain="${!domain_var:-}"
-    if [ -z "$domain" ]; then
-      echo "Service '$name' has ${name}_tunnel_provider=ngrok but no ${name}_ngrok_domain set." >&2
-      exit 1
+    if [ -n "$domain" ]; then
+      ngrok http --url="$domain" "$port" --log=stdout > "$cf_log" 2>&1 &
+      wait_for_log_pattern "$cf_log" "started tunnel" 20 || exit 1
+      url="https://$domain"
+    else
+      # No static domain configured — ngrok still relays WebSockets fine on an
+      # ephemeral (randomly-assigned) tunnel, so fall back to that instead of
+      # requiring one. Still needs `ngrok config add-authtoken` done once.
+      ngrok http "$port" --log=stdout > "$cf_log" 2>&1 &
+      wait_for_log_pattern "$cf_log" "started tunnel" 20 || exit 1
+      url="$(extract_ngrok_url "$cf_log")"
     fi
-    ngrok http --url="$domain" "$port" --log=stdout > "$cf_log" 2>&1 &
-    wait_for_log_pattern "$cf_log" "started tunnel" 20 || exit 1
-    url="https://$domain"
   else
     cloudflared tunnel --url "http://localhost:$port" > "$cf_log" 2>&1 &
     wait_for_log_pattern "$cf_log" "https://[a-z0-9-]+\.trycloudflare\.com" 20 || exit 1
@@ -410,17 +427,22 @@ everything_already_up() {
 
 recover_urls_or_return_1() {
   # Populates TUNNEL_URL_<NAME> for each service — from its known static
-  # domain (ngrok) or from its existing tunnel log (cloudflared). Returns 1
+  # domain (ngrok), or from its existing tunnel log otherwise (cloudflared,
+  # or an ephemeral ngrok tunnel with no configured domain). Returns 1
   # (without partial exports the caller should rely on) if any single one
   # can't be recovered.
   for name in "${SERVICES[@]}"; do
     local url
+    local cf_log="$LOG_DIR/$name.tunnel.log"
     if [ "$(tunnel_provider_for "$name")" = "ngrok" ]; then
       local domain_var="${name}_ngrok_domain"
-      url="https://${!domain_var:-}"
-      [ "$url" = "https://" ] && url=""
+      local domain="${!domain_var:-}"
+      if [ -n "$domain" ]; then
+        url="https://$domain"
+      else
+        url="$(extract_ngrok_url "$cf_log")"
+      fi
     else
-      local cf_log="$LOG_DIR/$name.tunnel.log"
       url="$(extract_tunnel_url "$cf_log")"
     fi
     if [ -z "$url" ]; then
