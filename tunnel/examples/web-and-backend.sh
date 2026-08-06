@@ -86,15 +86,6 @@ else
 fi
 bff_ready_pattern="listening"          # a string your backend logs once ready
 bff_kill_pattern=""                    # only needed if port-kill isn't enough
-# A backend can get its own persistent ngrok domain the same way the frontend
-# does below — useful when something external (an OAuth callback, a webhook
-# registration) is configured against this service's link and shouldn't churn
-# on every restart. Give it its own config.tunnel var name, don't reuse
-# NGROK_DOMAIN (that's the frontend's below):
-# if [ -n "${BACKEND_NGROK_DOMAIN:-}" ]; then
-#   bff_tunnel_provider="ngrok"
-#   bff_ngrok_domain="$BACKEND_NGROK_DOMAIN"
-# fi
 
 # ---- Frontend — built + started in PRODUCTION mode -------------------------
 # Dev-mode live-reload (webpack-hmr / Vite HMR / etc) relies on a WebSocket
@@ -121,9 +112,7 @@ web_kill_pattern=""
 # your own ngrok account) and this gives you the same public link every
 # single run instead of a fresh random cloudflared one each time. Nobody has
 # to do this — leaving it unset just falls back to cloudflared, same as
-# always. See tunnel/README.md for the full walkthrough. (Wanting the SAME
-# treatment for the backend too? See the commented BACKEND_NGROK_DOMAIN block
-# in the backend section above — same pattern, own var name.)
+# always. See tunnel/README.md for the full walkthrough.
 if [ -n "${NGROK_DOMAIN:-}" ]; then
   web_tunnel_provider="ngrok"
   web_ngrok_domain="$NGROK_DOMAIN"
