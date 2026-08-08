@@ -205,9 +205,14 @@ Everything above, plus:
   (`undefinedField`) — before touching any data — 502ing every signup unconditionally, not just
   duplicates. Confirmed live against Shopify's Admin API and against Shopify's own docs: the
   Admin API's plain `UserError` type (unlike the Storefront API's `CustomerUserError`) only has
-  `field` and `message`. Query `userErrors { field message }` only, and detect "already taken" by
-  `field` alone (a single error whose field includes `'email'`/`'phone'`), not by a `code` you'll
-  never get.
+  `field` and `message`. Query `userErrors { field message }` only.
+- **`field` alone isn't enough to detect "already taken."** Shopify returns the same
+  `field: ['email']` shape for a genuine duplicate *and* for a plain validation failure (e.g.
+  `"Email is invalid"`). Checking only `field` reports a malformed address as "an account with
+  this email already exists" — wrong status, and it sends the customer to log in instead of
+  fixing what they typed. Require the message to actually match `/already been taken/i` before
+  treating a single error as a conflict; anything else (including other single-field errors)
+  should fall through to the generic upstream failure.
 - **A server-side session revoke needs explicit handling at *every* call site that uses a
   resolved CAPI access token.** If a customer signs out directly on Shopify's own
   checkout/account domain, Shopify revokes that session server-side immediately — but your own

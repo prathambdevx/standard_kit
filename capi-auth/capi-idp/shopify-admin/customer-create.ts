@@ -89,13 +89,18 @@ async function defaultAdminCreate(input: CustomerCreateInput): Promise<NewShopif
   });
   const errors = data.customerCreate.userErrors;
   if (errors.length > 0) {
-    // A single, unambiguous field-specific error gets its own error so the
+    // A single, unambiguous "already taken" error gets its own error so the
     // signup form can point at the actual field instead of a generic 502 —
-    // anything else (multiple errors, or a field-less one) falls through to
-    // the generic upstream failure below rather than guessing. UserError (the
-    // type customerCreate actually returns) has no `code`, so field is the
-    // only signal available to tell "already taken" apart from other failures.
-    if (errors.length === 1) {
+    // anything else (multiple errors, a field-less one, or a single error that
+    // ISN'T a duplicate — e.g. "Email is invalid") falls through to the
+    // generic upstream failure below rather than guessing. UserError (the type
+    // customerCreate actually returns) has no `code`, so message text is the
+    // only signal that distinguishes "already taken" from every other single-
+    // field validation error Shopify can return on the same field — checking
+    // `field` alone here previously misreported a plain validation failure
+    // (e.g. a malformed email) as "an account with this email already
+    // exists", pointing the customer at logging in instead of fixing their input.
+    if (errors.length === 1 && /already been taken/i.test(errors[0]?.message ?? '')) {
       const field = errors[0]?.field;
       if (field?.includes('email')) {
         throw new ConflictError('An account with this email already exists', {
