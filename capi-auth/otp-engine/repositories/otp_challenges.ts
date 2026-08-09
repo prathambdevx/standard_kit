@@ -8,6 +8,7 @@
 // this off Postgres) — the type below is a plain structural shape, not a
 // generated one, so callers keep the exact same fields as before the move.
 
+import { randomUUID } from 'node:crypto';
 import { redis } from '@devxcommerce/bff-core';
 
 export type OtpChallenge = {
@@ -169,22 +170,93 @@ export async function deleteChallenge(otpId: string): Promise<void> {
   await redis().del(challengeKey(otpId));
 }
 
-const TAKE_SCRIPT = `
+// How long a signup claim is honoured before another attempt may take it over.
+// Bounds the damage if a process dies mid-signup: without it, an in-flight
+// stamp that nothing ever clears would lock the customer out of their own
+// signup for the key's whole remaining TTL. Comfortably longer than the
+// downstream customer-create round trip it guards.
+const SIGNUP_CLAIM_TTL_MS = 30 * 1000;
+
+export type SignupClaim = { challenge: OtpChallenge; claimToken: string };
+
+// Stamps an in-flight marker instead of deleting. Returns the record as it was
+// BEFORE the stamp, so the caller still reads the real username/channel/createdAt.
+// The token is what makes the release ownership-checked: once the stamp ages past
+// SIGNUP_CLAIM_TTL_MS a second attempt may take the claim over, and without a token
+// the first attempt's late release would clear the SECOND one's marker, letting a
+// third in while that one is still mid-customer-create.
+const CLAIM_SIGNUP_SCRIPT = `
 local rec = redis.call('HGETALL', KEYS[1])
 if #rec == 0 then return nil end
-redis.call('DEL', KEYS[1])
+local inflight = redis.call('HGET', KEYS[1], 'signupAt')
+if inflight and (tonumber(ARGV[1]) - tonumber(inflight)) < tonumber(ARGV[2]) then return nil end
+redis.call('HSET', KEYS[1], 'signupAt', ARGV[1], 'signupToken', ARGV[4])
+redis.call('EXPIRE', KEYS[1], ARGV[3])
 return rec
 `;
 
-/** Atomic claim for signup: deletes the key so a concurrent duplicate submit
- *  (double-tap, client retry on a flaky connection) finds nothing to work
- *  with, rather than racing to createShopifyCustomer with the same identity —
- *  the read and the delete run inside one script, so exactly one concurrent
- *  caller can come away with the record.
- *  Call this BEFORE creating the Shopify customer, not after: a delete placed
- *  at the end of the flow is cleanup, not a lock. There is no way back once
- *  this returns non-null, so the caller must be past every other check first. */
-export async function takeChallenge(otpId: string): Promise<OtpChallenge | null> {
-  const flat = (await redis().eval(TAKE_SCRIPT, 1, challengeKey(otpId))) as string[] | null;
-  return flat ? decodeFlat(otpId, flat) : null;
+/** Atomic claim for signup: marks the challenge in-flight so a concurrent
+ *  duplicate submit (double-tap, client retry on a flaky connection) can't
+ *  race to createShopifyCustomer with the same identity — the read and the
+ *  stamp run inside one script, so exactly one concurrent caller wins.
+ *
+ *  Deliberately NOT a delete. Deleting made the claim irreversible, so ANY
+ *  downstream failure (a duplicate email, a typo'd field, an upstream hiccup)
+ *  stranded the customer: the details form could only answer `otp_not_verified`
+ *  on a retry, and going back to resend answered `otp_not_found`, because the
+ *  record backing both was already gone. The caller deletes on SUCCESS
+ *  (consumeSignupClaim) and calls releaseSignupClaim on failure. */
+export async function claimChallengeForSignup(otpId: string): Promise<SignupClaim | null> {
+  const claimToken = randomUUID();
+  const flat = (await redis().eval(
+    CLAIM_SIGNUP_SCRIPT,
+    1,
+    challengeKey(otpId),
+    String(Date.now()),
+    String(SIGNUP_CLAIM_TTL_MS),
+    String(OTP_KEY_TTL_SECONDS),
+    claimToken,
+  )) as string[] | null;
+  return flat ? { challenge: decodeFlat(otpId, flat), claimToken } : null;
+}
+
+// Deliberately leaves updatedAt alone: submitOtpDetailsHandler measures its
+// 5-minute DETAILS_SUBMISSION_WINDOW_MS from it, so bumping it here would hand
+// out a fresh window on every failed attempt, indefinitely.
+// A missing key HGETs to `false` in Lua, which never equals the token string, so
+// the ownership check covers the deleted-key case without a separate EXISTS.
+const RELEASE_SIGNUP_SCRIPT = `
+if redis.call('HGET', KEYS[1], 'signupToken') ~= ARGV[1] then return 0 end
+redis.call('HDEL', KEYS[1], 'signupAt', 'signupToken')
+return 1
+`;
+
+/** Undoes claimChallengeForSignup after a failed create, so the customer can
+ *  fix their input and resubmit (or go back and resend) on the same challenge.
+ *  A no-op unless `claimToken` still owns the claim — a late release from a
+ *  timed-out attempt must not clear whichever attempt holds it now. */
+export async function releaseSignupClaim(otpId: string, claimToken: string): Promise<void> {
+  await redis().eval(RELEASE_SIGNUP_SCRIPT, 1, challengeKey(otpId), claimToken);
+}
+
+const CONSUME_SIGNUP_SCRIPT = `
+if redis.call('HGET', KEYS[1], 'signupToken') ~= ARGV[1] then return 0 end
+redis.call('DEL', KEYS[1])
+return 1
+`;
+
+/** Deletes the challenge once its signup has actually created the customer.
+ *  Ownership-checked for the same reason releaseSignupClaim is: a first
+ *  attempt that overran its lease and then succeeded must not delete a
+ *  challenge a SECOND attempt has since claimed and is still working on.
+ *  Returns false when the lease was lost, which the caller logs rather than
+ *  fails on — the customer was created either way. */
+export async function consumeSignupClaim(otpId: string, claimToken: string): Promise<boolean> {
+  const consumed = (await redis().eval(
+    CONSUME_SIGNUP_SCRIPT,
+    1,
+    challengeKey(otpId),
+    claimToken,
+  )) as number;
+  return consumed === 1;
 }

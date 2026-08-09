@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   AppError,
+  log,
   NotFoundError,
   redis,
   ServiceUnavailableError,
@@ -19,7 +20,12 @@ import { capiAuthCacheKey } from '../../middleware/customer';
 import { createCustomerFromSignup } from '../../repositories/customer_signup';
 import { findOrLazyFillByEmail, findOrLazyFillByPhone } from '../../repositories/customers';
 import { getInteraction } from '../../repositories/idp_interactions';
-import { getChallenge, takeChallenge } from '../../repositories/otp_challenges';
+import {
+  claimChallengeForSignup,
+  consumeSignupClaim,
+  getChallenge,
+  releaseSignupClaim,
+} from '../../repositories/otp_challenges';
 import { issueCapiSession } from '../../services/capi/session';
 import {
   consumeClaimToken,
@@ -207,9 +213,10 @@ export async function verifyOtpHandler(c: Context): Promise<Response> {
 
 // Same duration as OTP_TTL_MS in services/otp_engine/index.ts, but counted from when
 // the challenge was CONSUMED (its updatedAt, bumped by markConsumed), not the
-// original send. Defense in depth alongside takeChallenge's atomic claim below —
-// this window is what closes the gap between "signup succeeded" and "the
-// delete actually landed" (or failed and was degraded), not the only guard.
+// original send. Defense in depth alongside claimChallengeForSignup's atomic
+// claim below — this window is what closes the gap between "signup succeeded"
+// and "the challenge actually got consumed" (or failed and was degraded), not
+// the only guard.
 const DETAILS_SUBMISSION_WINDOW_MS = 5 * 60 * 1000;
 
 // Collects details for a phone-verified signup with no Shopify customer yet
@@ -248,31 +255,89 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
       code: 'otp_details_email_missing',
     });
   }
-  // Claim the challenge BEFORE calling Shopify, not after: a delete placed at
+  // Claim the challenge BEFORE calling Shopify, not after: a claim placed at
   // the end of the flow is cleanup, not a lock — two concurrent submits (a
   // double-tap on a flaky connection is enough, no attacker required) could
   // both pass the checks above and both reach createShopifyCustomer, and
   // Shopify's own email uniqueness is not a documented guarantee under
-  // concurrency. The atomic delete-by-id here means only one ever proceeds;
+  // concurrency. The atomic in-flight stamp here means only one ever proceeds;
   // the loser gets a clean 404 rather than racing an external API.
-  const claimed = await takeChallenge(body.otpId);
+  const claimed = await claimChallengeForSignup(body.otpId);
   if (!claimed) {
     throw new NotFoundError('OTP was not verified for this id', { code: 'otp_not_verified' });
   }
-  const shopifyCustomer = await createShopifyCustomer({
-    phone,
-    email,
-    firstName: body.firstName,
-    lastName: body.lastName,
-    acceptEmailMarketing: body.acceptEmailMarketing,
-    acceptSmsMarketing: body.acceptSmsMarketing,
-  });
-  const customer = await createCustomerFromSignup({
-    shopifyId: shopifyCustomer.id,
-    name: `${body.firstName} ${body.lastName}`.trim(),
-    email: shopifyCustomer.email ?? email,
-    phone: phone ?? null,
-  });
+  let shopifyCustomer: Awaited<ReturnType<typeof createShopifyCustomer>>;
+  try {
+    shopifyCustomer = await createShopifyCustomer({
+      phone,
+      email,
+      firstName: body.firstName,
+      lastName: body.lastName,
+      acceptEmailMarketing: body.acceptEmailMarketing,
+      acceptSmsMarketing: body.acceptSmsMarketing,
+    });
+  } catch (err) {
+    // No Shopify customer was created, so this challenge hasn't been spent —
+    // release it. Without this the customer is stranded on the very errors
+    // they're most likely to hit and could fix: a duplicate email (they meant
+    // to log in), a typo'd field, or a transient Shopify failure. Their retry
+    // would answer `otp_not_verified`, and going back to resend would answer
+    // `otp_not_found`, both because the record was destroyed by the claim.
+    //
+    // Best-effort, and deliberately rethrows the ORIGINAL error: a Redis blip
+    // here must not turn a precise "that email is already registered" into an
+    // unclassified 500, which is exactly the message the customer needs to act on.
+    try {
+      await releaseSignupClaim(body.otpId, claimed.claimToken);
+    } catch (releaseErr) {
+      log.warn({ err: releaseErr, otpId: body.otpId }, 'failed to release signup claim');
+    }
+    throw err;
+  }
+  // The Shopify customer now exists, so this challenge is spent and must never
+  // mint a second one — but only once EVERY step that can still fail is done.
+  // Consuming here rather than before the local write is what keeps a
+  // persistence failure from recreating the exact dead-end this handler
+  // exists to avoid: with the challenge already gone, the retry answers
+  // `otp_not_verified` and the customer is stranded again. Releasing instead
+  // leaves them a retry that reaches Shopify and returns a real, actionable
+  // `customer_email_taken` — their account does exist by then, so "log in
+  // instead" is the right answer.
+  let customer: Awaited<ReturnType<typeof createCustomerFromSignup>>;
+  try {
+    customer = await createCustomerFromSignup({
+      shopifyId: shopifyCustomer.id,
+      name: `${body.firstName} ${body.lastName}`.trim(),
+      email: shopifyCustomer.email ?? email,
+      phone: phone ?? null,
+    });
+  } catch (err) {
+    try {
+      await releaseSignupClaim(body.otpId, claimed.claimToken);
+    } catch (releaseErr) {
+      log.warn({ err: releaseErr, otpId: body.otpId }, 'failed to release signup claim');
+    }
+    throw err;
+  }
+  // Ownership-checked: if this attempt overran its lease and another has since
+  // claimed the challenge, deleting it would pull the record out from under an
+  // attempt still in flight.
+  //
+  // Best-effort for the mirror-image reason to the releases above: the signup has
+  // ALREADY succeeded, so failing the request over a cleanup error would tell
+  // the customer their signup failed when it didn't. A challenge that outlives
+  // this is bounded by DETAILS_SUBMISSION_WINDOW_MS.
+  try {
+    const consumed = await consumeSignupClaim(body.otpId, claimed.claimToken);
+    if (!consumed) {
+      log.warn(
+        { otpId: body.otpId },
+        'signup lease was taken over before this attempt finished; leaving the challenge to its current owner',
+      );
+    }
+  } catch (deleteErr) {
+    log.warn({ err: deleteErr, otpId: body.otpId }, 'failed to delete spent signup challenge');
+  }
   return respondWithCustomerSession(c, customer, challenge.createdAt);
 }
 
