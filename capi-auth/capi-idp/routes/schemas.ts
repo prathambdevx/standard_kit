@@ -122,9 +122,9 @@ export const capiClaimBodySchema = z.object({
   // into sessionStorage and sends it here. Deliberately a body field, not a
   // cookie — a cookie would need SameSite=None to survive this cross-origin
   // POST, which local/tunnel setups drop, making the control untestable in the
-  // only environments we can actually exercise it in. Optional so a login
-  // started before this shipped can still be claimed.
-  bindSecret: z.string().min(1).optional(),
+  // only environments we can actually exercise it in. Required — without it,
+  // any claim token relayed to another browser succeeds outright.
+  bindSecret: z.string().min(1),
 });
 
 // grant is only present on the silent-CAPI-handoff path (handlers.ts's

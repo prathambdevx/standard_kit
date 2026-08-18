@@ -17,8 +17,16 @@ export type CustomerCreateInput = {
 };
 
 // Shopify's actual CustomerInput shape for marketing consent — a nested
-// object with a required marketingState, not a bare boolean.
-type MarketingConsentInput = { marketingState: 'SUBSCRIBED' | 'NOT_SUBSCRIBED' };
+// object with a required marketingState, not a bare boolean. customerCreate
+// additionally requires marketingOptInLevel whenever marketingState is
+// SUBSCRIBED — without it the WHOLE mutation is rejected ("Marketing opt in
+// level must exist"), so a signup 502s the moment a consent box is ticked.
+// SINGLE_OPT_IN matches what a plain checkbox actually collects (no separate
+// confirmation step); use CONFIRMED_OPT_IN only if you really send one.
+type MarketingConsentInput = {
+  marketingState: 'SUBSCRIBED' | 'NOT_SUBSCRIBED';
+  marketingOptInLevel?: 'SINGLE_OPT_IN';
+};
 
 type ShopifyCustomerInput = {
   email: string;
@@ -52,9 +60,10 @@ export const CREATE_CUSTOMER_MUTATION = `
 // Omitted (not set to false) when the caller never said either way — only an
 // explicit true/false becomes an explicit Shopify subscription state.
 function toMarketingConsent(accept: boolean | undefined): MarketingConsentInput | undefined {
-  return accept === undefined
-    ? undefined
-    : { marketingState: accept ? 'SUBSCRIBED' : 'NOT_SUBSCRIBED' };
+  if (accept === undefined) return undefined;
+  return accept
+    ? { marketingState: 'SUBSCRIBED', marketingOptInLevel: 'SINGLE_OPT_IN' }
+    : { marketingState: 'NOT_SUBSCRIBED' };
 }
 
 function toShopifyInput(input: CustomerCreateInput): ShopifyCustomerInput {

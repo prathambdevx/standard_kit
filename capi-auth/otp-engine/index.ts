@@ -1,8 +1,7 @@
-// The OTP engine — generation, hashing, and constant-time verification of a
-// short-lived challenge. Attempts are tracked server-side (never trust a
-// client-held cookie for a guess counter — that's trivially bypassed by
-// replaying the original cookie), and challenge state lives in Redis with a
-// TTL instead of vanishing on restart or needing a cleanup job.
+// The OTP engine — ported from the original prototype,
+// with its one real bug fixed: attempts are tracked server-side (OtpAttempt,
+// Unit 1) instead of trusting a client-held cookie, and challenge state lives
+// in Postgres (OtpChallenge, Unit 5) instead of vanishing on restart.
 import { createHmac, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { env } from '../../config/env';
 import { claimAttempt, resetAttempts } from '../../repositories/otp_attempts';
@@ -14,7 +13,7 @@ import {
   touchChallenge,
 } from '../../repositories/otp_challenges';
 import { sendOtpEmail } from './email';
-import { recordOtpMetric } from './metrics';
+import { identifierField, recordOtpMetric } from './metrics';
 import { checkOtpSendRateLimit } from './rate_limit';
 import { sendOtpSms } from './sms';
 
@@ -29,9 +28,7 @@ export type OtpChannel = 'mobile' | 'email';
 // rotate casually, but worth knowing before doing it on a whim.
 function hashSecret(): string {
   if (!env.OTP_HASH_SECRET) {
-    throw new Error(
-      'OTP_HASH_SECRET is not set — refusing to hash OTP codes with no secret',
-    );
+    throw new Error('OTP_HASH_SECRET is not set — refusing to hash OTP codes with no secret');
   }
   return env.OTP_HASH_SECRET;
 }
@@ -41,8 +38,8 @@ function hash(code: string): string {
 }
 
 // Constant-time — a naive `hash(code) === codeHash` string comparison leaks
-// timing information about how many leading characters matched. Both sides
-// are already fixed-length hex digests.
+// timing information about how many leading characters matched. Both sides are
+// already fixed-length hex digests.
 function hashesMatch(a: string, b: string): boolean {
   const bufA = Buffer.from(a, 'hex');
   const bufB = Buffer.from(b, 'hex');
@@ -59,7 +56,7 @@ export async function createOtp(
 ): Promise<{ otpId: string; code: string }> {
   const code = genCode();
   const otpId = `otp_${randomUUID()}`;
-  // Deliver BEFORE persisting — a send
+  // Deliver BEFORE persisting, matching the vendor provider's ordering: a send
   // that throws must leave no challenge row behind — the row otherwise sits
   // unclaimed until its resendOtp-driven overwrite or the eventual signup
   // deleteChallenge, describing a code the customer never received.
@@ -68,7 +65,7 @@ export async function createOtp(
   const expiresAt = new Date(Date.now() + OTP_TTL_MS);
   await createChallenge({ otpId, username, channel, codeHash: hash(code), expiresAt });
   await resetAttempts(otpId, expiresAt);
-  recordOtpMetric('otp_sent', { channel });
+  recordOtpMetric('otp_sent', { channel, ...identifierField(channel, username) });
   return { otpId, code };
 }
 
@@ -78,8 +75,8 @@ export type ResendResult =
 
 // The cooldown alone doesn't cap total sends — a caller can resend every 30s
 // forever, resetting expiresAt each time. Resend must go through the same
-// send caps as the initial send, or a phone/IP could bypass rate limiting
-// entirely by only ever hitting /resend after one throwaway /send.
+// send caps as the initial send, or a phone/IP could bypass the send caps entirely
+// by only ever hitting /resend after one throwaway /send.
 //
 // This check lives here, not in the resend handler (unlike send's, which
 // checks in its handler): the send handler already has the phone from the
@@ -105,7 +102,10 @@ export async function resendOtp(otpId: string, ip: string): Promise<ResendResult
   const expiresAt = new Date(Date.now() + OTP_TTL_MS);
   await resetChallenge(otpId, hash(code), expiresAt);
   await resetAttempts(otpId, expiresAt);
-  recordOtpMetric('otp_resent', { channel: existing.channel });
+  recordOtpMetric('otp_resent', {
+    channel: existing.channel,
+    ...identifierField(existing.channel, existing.username),
+  });
   return { otpId, code };
 }
 
@@ -117,7 +117,10 @@ export async function verifyOtp(otpId: string, code: string): Promise<VerifyResu
   const challenge = await getChallenge(otpId);
   if (!challenge || challenge.consumed) return { ok: false, error: 'otp_not_found' };
   if (Date.now() > challenge.expiresAt.getTime()) {
-    recordOtpMetric('otp_verify_expired', { channel: challenge.channel });
+    recordOtpMetric('otp_verify_expired', {
+      channel: challenge.channel,
+      ...identifierField(challenge.channel, challenge.username),
+    });
     return { ok: false, error: 'otp_expired' };
   }
 
@@ -126,7 +129,10 @@ export async function verifyOtp(otpId: string, code: string): Promise<VerifyResu
   const claim = await claimAttempt(otpId, MAX_ATTEMPTS);
   if (!claim.ok) {
     if (claim.reason === 'unknown') return { ok: false, error: 'otp_not_found' };
-    recordOtpMetric('otp_verify_locked', { channel: challenge.channel });
+    recordOtpMetric('otp_verify_locked', {
+      channel: challenge.channel,
+      ...identifierField(challenge.channel, challenge.username),
+    });
     return { ok: false, error: 'otp_locked' };
   }
 
@@ -134,6 +140,7 @@ export async function verifyOtp(otpId: string, code: string): Promise<VerifyResu
     const locked = claim.attempts >= MAX_ATTEMPTS;
     recordOtpMetric(locked ? 'otp_verify_locked' : 'otp_verify_failed', {
       channel: challenge.channel,
+      ...identifierField(challenge.channel, challenge.username),
     });
     return { ok: false, error: locked ? 'otp_locked' : 'otp_incorrect' };
   }
@@ -147,6 +154,7 @@ export async function verifyOtp(otpId: string, code: string): Promise<VerifyResu
   recordOtpMetric('otp_verify_success', {
     channel: challenge.channel,
     durationMs: Date.now() - challenge.createdAt.getTime(),
+    ...identifierField(challenge.channel, challenge.username),
   });
   return { ok: true, username: challenge.username, channel: challenge.channel as OtpChannel };
 }

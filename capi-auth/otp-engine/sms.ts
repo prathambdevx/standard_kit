@@ -1,7 +1,7 @@
 import { log, ServiceUnavailableError } from '@devxcommerce/bff-core';
 import { env } from '../../config/env';
 
-// No SMS gateway is wired yet (Gupshup/MSG91 is its own unit). Until one is,
+// No SMS gateway is wired here — that is deliberately yours to choose. Until one is,
 // this refuses on the prod stage rather than resolving successfully: a mock that
 // silently "succeeds" makes every login return 200 with an otpId, record
 // otp_sent, and deliver nothing — response and metrics both look healthy while

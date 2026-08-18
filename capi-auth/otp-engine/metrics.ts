@@ -15,3 +15,11 @@ export type OtpMetricEvent =
 export function recordOtpMetric(event: OtpMetricEvent, fields: Record<string, unknown> = {}): void {
   log.info({ metric: event, ...fields }, `[otp metric] ${event}`);
 }
+
+// Email OTP events carry the recipient address so an admin delivery-log view can
+// show it; SMS events deliberately do not — a phone number in application logs
+// is PII you rarely need there, and an SMS vendor's own logs already give
+// support that view. Adjust if your own vendor does not.
+export function identifierField(channel: string, username: string): Record<string, unknown> {
+  return channel === 'email' ? { identifier: username } : {};
+}

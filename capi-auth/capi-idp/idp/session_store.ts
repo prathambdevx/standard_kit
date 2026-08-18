@@ -17,6 +17,13 @@ export interface PendingAuth {
   codeVerifier: string;
   redirectUri: string;
   bindHash?: string; // carried from the silent grant through to the claim token
+  // The silent-grant token this handshake was started for, kept so the callback
+  // can verify the IdP actually consumed it. Shopify short-circuits /authorize
+  // when it already holds a customer-account session — it never calls you, the
+  // grant survives untouched, and the code it returns is for whoever it already
+  // had rather than the customer who just passed OTP. See the README's
+  // session-reuse note.
+  grantToken?: string;
 }
 
 export async function putPending(state: string, data: PendingAuth): Promise<void> {

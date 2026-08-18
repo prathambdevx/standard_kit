@@ -87,7 +87,13 @@ Both pieces assume:
    (non-local) environment, and only relevant if you're using the custom IdP.
 6. **Register with Shopify** — see "Shopify-side setup" below. This is the one step that can't be
    automated from inside your codebase; it's clicking through Shopify's own admin UI.
-7. **Adapt the project-specific bits** — see "What to decide for your own project" below. Don't
+7. **Wire logout end-to-end, including the frontend.** `POST /capi/logout` revokes your own
+   session and returns a `logoutUrl`; your frontend must then do a **top-level navigation** to it
+   (`window.location.href = logoutUrl`), not a `fetch`. Skipping this leaves Shopify's own session
+   alive, which silently hijacks the next login — the single worst failure mode in this flow, see
+   "Known gotchas". Race the revoke call against a short timeout so a slow or failed revoke still
+   lets the customer finish clearing their local state.
+8. **Adapt the project-specific bits** — see "What to decide for your own project" below. Don't
    skip this; a couple of pieces (synthetic email domain, marketing-consent field mapping, phone
    format) need real decisions for your own brand/store, not just a copy-paste.
 
@@ -153,6 +159,14 @@ CAPI_SCOPE=                         # e.g. "openid email customer-account-api:fu
 CAPI_CALLBACK_LANDING_URL=          # where the browser lands after a successful CAPI handoff
 CAPI_CUSTOMER_ACCOUNT_HOST=         # https://<shop>.account.myshopify.com
 
+# Logout. Without BOTH of these, Shopify's own customer-account session survives
+# your logout and silently hijacks the NEXT login — see "Shopify reuses its own
+# session" below. Not optional in practice.
+CAPI_END_SESSION_ENDPOINT=          # the read-only "Logout endpoint" on the Customer Account API screen
+CAPI_POST_LOGOUT_REDIRECT_URI=      # where Shopify returns the browser after ending its session; ALSO paste
+                                    # this exact value into the "Logout URI" field under Application setup,
+                                    # or Shopify rejects the redirect
+
 # Shared with the rest of your Shopify integration
 SHOPIFY_ADMIN_API_TOKEN=
 SHOPIFY_STORE_DOMAIN=
@@ -195,12 +209,74 @@ Everything above, plus:
 3. **Generate and register `IDP_CLIENT_ID`/`IDP_CLIENT_SECRET`** — the credentials *Shopify* uses
    to authenticate to *your* IdP (the reverse direction from the CAPI credentials above).
 4. **Register the redirect URI(s) Shopify will use against your IdP** (`IDP_ALLOWED_REDIRECT_URIS`)
-   — read directly off Shopify's identity-provider settings page once you've registered.
-5. Do all of this **separately per environment** (dev/staging/prod each need their own Shopify
+   — read directly off Shopify's identity-provider settings page once you've registered. Include
+   **every** post-logout target too: Shopify's front-channel logout calls your `/idp/logout` with a
+   `post_logout_redirect_uri`, and since that allowlist is shared with `/authorize`'s check, a
+   missing entry makes the handler fail closed and answer a bare "Logged out" instead of
+   redirecting the customer back to your site.
+5. **Fill in the "Logout URI" field** under Customer Account API → Application setup with the exact
+   same value as `CAPI_POST_LOGOUT_REDIRECT_URI`. Shopify rejects the post-logout redirect
+   otherwise. This field is empty by default, and because nothing calls the logout endpoint until
+   you wire it up, it is easy to ship without ever hitting the rejection.
+6. Do all of this **separately per environment** (dev/staging/prod each need their own Shopify
    registration and their own signing key, since each has a different domain).
 
 ## Known gotchas — already hit and fixed once; don't reintroduce them
 
+- **Shopify reuses its own customer-account session, so a login can return the WRONG customer.**
+  This is the single worst bug in this whole flow, and it needs three separate mechanisms to
+  handle properly. `/oauth/authorize` takes no `prompt` parameter (Shopify documents only
+  `locale` and `region_country` — `prompt=login` does nothing), so whenever Shopify already
+  holds an authenticated customer-account session it **short-circuits**: it never calls your IdP,
+  and it hands back an authorization code for *whoever it already had*, silently discarding the
+  OTP you just verified. On a shared or kiosk browser the first person to log in owns every
+  later login until that session expires.
+
+  1. **Prevention — end Shopify's session on logout.** `capiLogoutHandler` returns a `logoutUrl`
+     built from `CAPI_END_SESSION_ENDPOINT`, carrying the session's own persisted `id_token` as
+     `id_token_hint`. Your frontend must do a **top-level navigation** to it, not a `fetch`:
+     Shopify's session is a cookie in that browser, so nothing server-side can clear it, and a
+     `Set-Cookie` on a cross-origin fetch is dropped. Shopify **rejects** `end_session_endpoint`
+     without a valid `id_token_hint` ("Invalid id_token") rather than logging out anonymously —
+     so a URL built without one doesn't merely skip the clean return trip, it leaves Shopify's
+     session fully intact while looking like it worked.
+  2. **Detection — carry the grant token and re-check it.** Put the single-use grant token on
+     `PendingAuth` (`grantToken`) and consume it again in the callback. If it's **still
+     unconsumed**, your IdP was never called, so this code came from a reused session. Note this
+     proves only that Shopify skipped you — it says **nothing** about identity.
+  3. **Judge identity, don't infer it.** Treating "grant unconsumed" as "wrong customer" is
+     wrong and was itself a bug: signing in from Shopify's checkout leaves Shopify holding a
+     session for the customer who *just* logged in, so an immediate second login short-circuits
+     to the **same** person and was refused anyway. Exchange the code, resolve the actual
+     customer (`getCapiCustomer`), and compare it to the one the grant was minted for. Same
+     customer → let them in. Different → refuse, delete the just-minted session (it is a live
+     30-day credential for the wrong customer), and redirect them through Shopify's logout using
+     that session's `id_token` so their retry starts clean — refusing alone dead-ends them, since
+     every retry short-circuits to the same wrong identity until Shopify's session expires.
+     Compare ids on their numeric tail: the Customer Account API returns
+     `gid://shopify/Customer/123` while your own row may hold the bare `123`, and a format
+     difference must never read as a different person.
+- **Never throw from the CAPI callback — redirect.** `capi/callback` is a top-level browser
+  navigation, so anything thrown there renders raw JSON at the customer in the middle of logging
+  in. Every failure on that route (Shopify-denied authorize, missing/replayed state, expired
+  pending state, failed code exchange, identity mismatch) is recoverable by simply logging in
+  again, so send them to your login page with a coarse notice instead. Two consequences worth
+  planning for: the redirect means your `AppError` handler never sees these, so **report the
+  genuine faults explicitly** (a missing config, a failed exchange) or you silently lose all
+  alerting on them; and keep a `throw` as the last resort for when no login page URL is
+  configured to redirect to.
+- **The browser-binding secret must be mandatory, not optional.** The claim token returned by the
+  callback is a bearer credential in a URL — whoever POSTs it gets the session. `bindSecret` is
+  what proves the browser finishing the login is the one that started it: the browser mints a
+  random secret in `sessionStorage`, sends only its SHA-256 up front, and returns the raw secret
+  at claim time. If a missing recorded hash is allowed to *pass* (`if (!expectedHash) return
+  true`), the whole control is bypassable by any caller that simply omits it — a relayed claim
+  URL then logs the victim into the attacker's session, and since the callback clears any prior
+  credential first, the attacker's wins outright. Refuse on a missing hash, and make the request
+  field required. Also send the hash on **whichever call mints the grant** — for a returning
+  customer that's `otp/verify`, but for a *signup* it's `otp/details` (verify answers
+  `details_required` and mints nothing), so a hash sent only to verify is silently discarded and
+  every new signup fails the claim.
 - **`customerCreate`'s `userErrors` has no `code` field.** Querying `userErrors { field message
   code }` makes Shopify reject the *entire mutation* at schema-validation time
   (`undefinedField`) — before touching any data — 502ing every signup unconditionally, not just

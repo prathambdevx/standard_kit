@@ -26,11 +26,13 @@ import {
   getChallenge,
   releaseSignupClaim,
 } from '../../repositories/otp_challenges';
+import { getCapiCustomer } from '../../services/capi/customer';
 import { issueCapiSession } from '../../services/capi/session';
 import {
   consumeClaimToken,
   createClaimToken,
   deleteCapiSession,
+  getCapiSession,
 } from '../../services/capi/session_store';
 import {
   authenticateClient,
@@ -98,16 +100,25 @@ function sha256Hex(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function bindSecretMatches(secret: string | undefined, expectedHash: string | undefined): boolean {
-  // No hash stored: a login started before this shipped, or a caller that never
-  // sent one. Nothing to compare against, so it passes — tightening this to a
-  // hard requirement is safe once no pre-existing claim tokens can be in flight
-  // (they live 60s), and is the follow-up to make it mandatory.
-  if (!expectedHash) return true;
-  if (!secret) return false;
+function bindSecretMatches(secret: string, expectedHash: string | undefined): boolean {
+  // No hash recorded on the grant/pending state — refuse rather than pass.
+  // A missing hash here means either the verify call never sent one (the web
+  // client is broken) or this claim is being made against a grant that was
+  // never bound to a browser at all — neither is a case to let through.
+  if (!expectedHash) return false;
   const a = Buffer.from(sha256Hex(secret), 'hex');
   const b = Buffer.from(expectedHash, 'hex');
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+// Shopify ids reach this file in both forms — `gid://shopify/Customer/123` from
+// the Customer Account API, and the same value from our own Customer row — so
+// compare the numeric tail rather than the raw string. A format difference must
+// never read as a different customer: that would refuse a legitimate login.
+function sameShopifyCustomer(a: string, b: string): boolean {
+  const tail = (id: string) => id.split('/').pop() ?? id;
+  const [x, y] = [tail(a), tail(b)];
+  return x.length > 0 && x === y;
 }
 
 function bffBaseUrl(c: Context): string {
@@ -138,7 +149,7 @@ function clientIp(c: Context): string {
 
 // ── OTP: our own API, follows the standard {data,meta}/{error,meta} envelope ──
 
-// Sends an OTP to the customer's phone or email, depending on channel.
+// Sends an OTP to the customer's phone or email address.
 export async function sendOtpHandler(c: Context): Promise<Response> {
   const body = await parseBody(c, otpSendSchema);
   // A synthetic address is a placeholder we minted for a phone-only signup, not
@@ -168,12 +179,12 @@ export async function resendOtpHandler(c: Context): Promise<Response> {
   return ok(c, { otpId: result.otpId });
 }
 
-// Verifies the code, resolves/lazily-fills the local Customer row. Three
-// outcomes: no Shopify customer for this identity at all → details_required
-// (a genuinely new signup); otherwise, if a pending IdP interaction cookie is
-// present, completes it and returns the Shopify redirect; otherwise just
-// confirms the identity is verified (no IdP interaction; e.g. a standalone
-// OTP check).
+// Verifies the code, resolves/lazily-fills the local Customer row (phone
+// lookup). Three outcomes: no Shopify customer for this phone at all
+// → details_required (a genuinely new signup); otherwise, if a pending
+// IdP interaction cookie is present, completes it and returns the Shopify
+// redirect; otherwise just confirms the phone is verified (no IdP
+// interaction; e.g. a standalone OTP check).
 export async function verifyOtpHandler(c: Context): Promise<Response> {
   const body = await parseBody(c, otpVerifySchema);
   // Caps guesses per network. claimAttempt caps them per challenge, which an
@@ -195,8 +206,8 @@ export async function verifyOtpHandler(c: Context): Promise<Response> {
       ? await findOrLazyFillByEmail(result.username)
       : await findOrLazyFillByPhone(result.username);
   if (!customer) {
-    // Shopify has never seen this phone/address — nothing to prefill from. On
-    // the email channel
+    // Shopify has never seen this phone/address — nothing to prefill from.
+    // On the email channel
     // the address is already proven, so prefill it and drop the requirement
     // rather than asking again for what was just verified (the submit handler
     // binds the verified value regardless of what the client sends).
@@ -213,10 +224,9 @@ export async function verifyOtpHandler(c: Context): Promise<Response> {
 
 // Same duration as OTP_TTL_MS in services/otp_engine/index.ts, but counted from when
 // the challenge was CONSUMED (its updatedAt, bumped by markConsumed), not the
-// original send. Defense in depth alongside claimChallengeForSignup's atomic
-// claim below — this window is what closes the gap between "signup succeeded"
-// and "the challenge actually got consumed" (or failed and was degraded), not
-// the only guard.
+// original send. Defense in depth alongside claimChallengeForSignup's atomic claim below —
+// this window is what closes the gap between "signup succeeded" and "the
+// delete actually landed" (or failed and was degraded), not the only guard.
 const DETAILS_SUBMISSION_WINDOW_MS = 5 * 60 * 1000;
 
 // Collects details for a phone-verified signup with no Shopify customer yet
@@ -238,9 +248,8 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
   // The challenge's username IS the phone for the mobile channel — never
   // asked for again on this endpoint. Email-channel signups may type a phone
   // in the body instead; it's saved as-is, same trust level as `email` below
-  // (see otpDetailsSchema's phone field comment — a deliberate product
-  // decision, not an oversight; document it as an accepted tradeoff in your
-  // own security notes if you keep this shape).
+  // (see otpDetailsSchema's phone field comment — product decision, not an
+  // oversight, treat this as an accepted tradeoff).
   const phone = challenge.channel === 'mobile' ? challenge.username : body.phone;
   // An email-channel challenge already PROVED an address, so that one is
   // authoritative and body.email is ignored. Taking the client's value here
@@ -296,13 +305,12 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
   }
   // The Shopify customer now exists, so this challenge is spent and must never
   // mint a second one — but only once EVERY step that can still fail is done.
-  // Consuming here rather than before the local write is what keeps a
-  // persistence failure from recreating the exact dead-end this handler
-  // exists to avoid: with the challenge already gone, the retry answers
-  // `otp_not_verified` and the customer is stranded again. Releasing instead
-  // leaves them a retry that reaches Shopify and returns a real, actionable
-  // `customer_email_taken` — their account does exist by then, so "log in
-  // instead" is the right answer.
+  // Consuming here rather than before the local write is what keeps a Postgres
+  // failure from recreating the exact dead-end this handler exists to avoid:
+  // with the challenge already gone, the retry answers `otp_not_verified` and
+  // the customer is stranded again. Releasing instead leaves them a retry that
+  // reaches Shopify and returns a real, actionable `customer_email_taken` —
+  // their account does exist by then, so "log in instead" is the right answer.
   let customer: Awaited<ReturnType<typeof createCustomerFromSignup>>;
   try {
     customer = await createCustomerFromSignup({
@@ -400,20 +408,8 @@ async function respondWithSilentCapiHandoff(
   c: Context,
   customer: { shopifyId: string; email: string },
 ): Promise<Response> {
-  const {
-    CAPI_AUTHORIZE_ENDPOINT,
-    CAPI_REDIRECT_URI,
-    CAPI_SCOPE,
-    CAPI_CLIENT_ID,
-  } = env;
-  if (
-    missingCapiConfig(
-      CAPI_AUTHORIZE_ENDPOINT,
-      CAPI_REDIRECT_URI,
-      CAPI_SCOPE,
-      CAPI_CLIENT_ID,
-    )
-  ) {
+  const { CAPI_AUTHORIZE_ENDPOINT, CAPI_REDIRECT_URI, CAPI_SCOPE, CAPI_CLIENT_ID } = env;
+  if (missingCapiConfig(CAPI_AUTHORIZE_ENDPOINT, CAPI_REDIRECT_URI, CAPI_SCOPE, CAPI_CLIENT_ID)) {
     // CAPI isn't wired up in this environment yet — the old, plain outcome
     // (verified on our own site, no Shopify session) rather than a handoff
     // URL that would 502.
@@ -582,7 +578,7 @@ export function logoutHandler(c: Context): Response {
   return c.text('Logged out', 200);
 }
 
-// ── CAPI: your app as an OAuth *client* of Shopify's Customer Account
+// ── CAPI: the BFF as an OAuth *client* of Shopify's Customer Account
 // API — the mirror image of the IdP section above, where Shopify is the
 // client of us. Raw redirects, not our {data,meta} envelope, matching how
 // authorizeHandler already hands off to a browser mid-flow. ──
@@ -628,20 +624,8 @@ export async function startCapiAuthorizeHandler(c: Context): Promise<Response> {
     });
   }
 
-  const {
-    CAPI_AUTHORIZE_ENDPOINT,
-    CAPI_REDIRECT_URI,
-    CAPI_SCOPE,
-    CAPI_CLIENT_ID,
-  } = env;
-  if (
-    missingCapiConfig(
-      CAPI_AUTHORIZE_ENDPOINT,
-      CAPI_REDIRECT_URI,
-      CAPI_SCOPE,
-      CAPI_CLIENT_ID,
-    )
-  ) {
+  const { CAPI_AUTHORIZE_ENDPOINT, CAPI_REDIRECT_URI, CAPI_SCOPE, CAPI_CLIENT_ID } = env;
+  if (missingCapiConfig(CAPI_AUTHORIZE_ENDPOINT, CAPI_REDIRECT_URI, CAPI_SCOPE, CAPI_CLIENT_ID)) {
     throw new ServiceUnavailableError('CAPI authorize flow is not fully configured', {
       code: 'capi_authorize_unconfigured',
     });
@@ -659,6 +643,7 @@ export async function startCapiAuthorizeHandler(c: Context): Promise<Response> {
     codeVerifier,
     redirectUri: CAPI_REDIRECT_URI as string,
     bindHash: grantBindHash,
+    grantToken: grant,
   });
 
   const url = new URL(CAPI_AUTHORIZE_ENDPOINT as string);
@@ -672,6 +657,25 @@ export async function startCapiAuthorizeHandler(c: Context): Promise<Response> {
   return c.redirect(url.toString(), 302);
 }
 
+// capi/callback is a TOP-LEVEL navigation, so anything thrown here renders raw
+// JSON at the customer — an error page in the middle of logging in. Every failure
+// on this route is recoverable by simply logging in again, so send them to the
+// login page instead and let them retry. `notice` is a coarse, non-secret reason
+// the page can use for a gentle message; it is never the error detail.
+//
+// Failures are still reported explicitly, because redirecting means the AppError
+// handler no longer sees them and would otherwise stop alerting on genuine faults.
+function redirectToLoginAfterFailedCallback(
+  c: Context,
+  notice: 'session-reused' | 'expired' | 'failed',
+): Response | null {
+  const { LOGIN_PAGE_URL } = env;
+  if (!LOGIN_PAGE_URL) return null;
+  const url = new URL(LOGIN_PAGE_URL);
+  url.searchParams.set('auth_notice', notice);
+  return c.redirect(url.toString(), 302);
+}
+
 // Completes the CAPI handshake and redirects to the frontend landing page.
 export async function capiCallbackHandler(c: Context): Promise<Response> {
   const q = parseQuery(c, capiCallbackQuerySchema);
@@ -679,23 +683,92 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
   // Shopify sends `error` instead of `code` when the customer denies consent
   // or the flow fails on its side — distinct from a malformed callback.
   if (q.error) {
+    log.warn({ err: q.error, detail: q.error_description }, 'CAPI authorize denied by Shopify');
+    const bounce = redirectToLoginAfterFailedCallback(c, 'failed');
+    if (bounce) return bounce;
     throw new ValidationError(q.error_description ?? `Shopify CAPI returned ${q.error}`, {
       code: 'capi_authorize_denied',
     });
   }
   if (!q.code || !q.state) {
+    log.warn('CAPI callback hit with no code/state');
+    const bounce = redirectToLoginAfterFailedCallback(c, 'failed');
+    if (bounce) return bounce;
     throw new ValidationError('Missing code or state', { code: 'capi_callback_invalid_query' });
   }
 
   const pending = await takePending(q.state);
   if (!pending) {
+    // Routine, not a fault: a stale tab, a replayed callback, or a handshake that
+    // outlived its 10-minute pending TTL all land here.
+    log.warn({ state: q.state }, 'CAPI callback for unknown/expired state');
+    const bounce = redirectToLoginAfterFailedCallback(c, 'expired');
+    if (bounce) return bounce;
     throw new NotFoundError('Unknown or expired CAPI authorization state', {
       code: 'capi_state_not_found',
     });
   }
 
+  // Our IdP consumes the grant (takeSilentGrant) as the customer is bound, so by
+  // now it MUST be gone. Still present means Shopify never called us: it already
+  // held a customer-account session and short-circuited /authorize, so `code`
+  // below is for whoever that session belongs to rather than for the customer
+  // who just passed OTP.
+  //
+  // That is NOT automatically the wrong customer, and treating it as such was a
+  // real bug: signing in from checkout leaves Shopify holding a session for the
+  // customer who just logged in, so an immediate second login (browser-back onto
+  // our login page, which cannot see that session) short-circuits to the SAME
+  // person and was refused anyway. The grant being unconsumed only proves
+  // Shopify skipped our IdP — it says nothing about identity, so the identity is
+  // compared below, after the exchange, instead of being inferred here.
+  let expectedShopifyId: string | undefined;
+  if (pending.grantToken) {
+    let unconsumed: Awaited<ReturnType<typeof takeSilentGrant>>;
+    try {
+      // Burns it in the same call — this handshake is over either way, and
+      // leaving a live grant behind lets the same round trip be replayed.
+      unconsumed = await takeSilentGrant(pending.grantToken);
+    } catch (cause) {
+      // Redis could not tell us whether our IdP consumed the grant, so there is
+      // no way to know whose code this is. Fail closed rather than exchange it:
+      // guessing wrong here is the account-takeover this gate exists to stop.
+      reportDegradation({
+        userImpact: 'Login cannot complete — the customer is returned to the login page to retry.',
+        impact: 'blocking',
+        at: 'routes/handlers.ts:capiCallbackHandler',
+        code: 'capi_grant_lookup_failed',
+        cause,
+      });
+      const bounce = redirectToLoginAfterFailedCallback(c, 'failed');
+      if (bounce) return bounce;
+      throw new ServiceUnavailableError('Could not verify the sign-in grant', {
+        code: 'capi_grant_lookup_failed',
+        cause,
+      });
+    }
+    if (unconsumed) {
+      expectedShopifyId = unconsumed.shopifyId;
+      log.warn(
+        { state: q.state },
+        'CAPI callback: Shopify reused an existing customer-account session instead of authenticating via our IdP — verifying the returned identity before issuing a session',
+      );
+    }
+  }
+
   const { CAPI_TOKEN_ENDPOINT, CAPI_CALLBACK_LANDING_URL } = env;
   if (missingCapiConfig(CAPI_TOKEN_ENDPOINT, CAPI_CALLBACK_LANDING_URL)) {
+    // A real misconfiguration — reported so it still alerts, since redirecting
+    // means the AppError handler never sees it.
+    reportDegradation({
+      userImpact: 'Login cannot complete — the customer is returned to the login page.',
+      impact: 'blocking',
+      at: 'routes/handlers.ts:capiCallbackHandler',
+      code: 'capi_callback_unconfigured',
+      cause: new Error('CAPI_TOKEN_ENDPOINT or CAPI_CALLBACK_LANDING_URL unset'),
+    });
+    const bounce = redirectToLoginAfterFailedCallback(c, 'failed');
+    if (bounce) return bounce;
     throw new ServiceUnavailableError('CAPI callback is not fully configured', {
       code: 'capi_callback_unconfigured',
     });
@@ -710,6 +783,17 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
       tokenEndpoint: CAPI_TOKEN_ENDPOINT as string,
     });
   } catch (e) {
+    // A genuine upstream failure — reported so it still alerts, since the customer
+    // is redirected rather than shown the error.
+    reportDegradation({
+      userImpact: 'Login could not complete — the customer is returned to the login page to retry.',
+      impact: 'blocking',
+      at: 'routes/handlers.ts:capiCallbackHandler',
+      code: 'capi_session_issue_failed',
+      cause: e,
+    });
+    const bounce = redirectToLoginAfterFailedCallback(c, 'failed');
+    if (bounce) return bounce;
     // issueCapiSession's own missing-refresh-token guard is a plain Error
     // (it had no request boundary to map to when it was written) — this IS
     // that boundary now, so wrap anything not already an AppError.
@@ -718,6 +802,59 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
       code: 'capi_session_issue_failed',
       cause: e,
     });
+  }
+
+  // Shopify short-circuited /authorize (the grant above survived), so the
+  // session just minted is for whoever Shopify already had. Confirm that is the
+  // same customer who passed OTP before handing it over; a mismatch is the
+  // account-takeover case this gate exists for, so the session is destroyed
+  // rather than left redeemable for its full 30-day TTL.
+  if (expectedShopifyId) {
+    let actualShopifyId: string | null = null;
+    let idToken: string | undefined;
+    try {
+      const record = await getCapiSession(sessionId);
+      idToken = record?.idToken;
+      actualShopifyId = record
+        ? ((await getCapiCustomer(record.accessToken))?.shopifyId ?? null)
+        : null;
+    } catch (cause) {
+      // Could not prove identity either way — fail closed, same as a mismatch.
+      log.warn({ err: cause, state: q.state }, 'CAPI identity check failed; refusing the session');
+    }
+    if (!actualShopifyId || !sameShopifyCustomer(actualShopifyId, expectedShopifyId)) {
+      await deleteCapiSession(sessionId).catch((cause) => {
+        reportDegradation({
+          userImpact: 'None visible — the refused login is rejected either way.',
+          impact: 'blocking',
+          at: 'routes/handlers.ts:capiCallbackHandler',
+          code: 'capi_refused_session_cleanup_failed',
+          cause,
+        });
+      });
+      log.warn(
+        { state: q.state },
+        'CAPI callback refused: Shopify returned a different customer than the one just verified',
+      );
+
+      // Refusing alone would dead-end them: Shopify still holds the OTHER
+      // customer's session, so every retry short-circuits to the same wrong
+      // identity until that session expires on its own. The exchange above is
+      // what makes recovery possible — it handed us that session's own id_token,
+      // which end_session_endpoint requires as id_token_hint (it rejects a
+      // request without one). Send them through Shopify's logout so its session
+      // is gone, and Shopify returns them to the login page for a clean retry.
+      const logoutUrl = buildShopifyLogoutUrl(idToken);
+      if (logoutUrl) return c.redirect(logoutUrl, 302);
+      // No end_session_endpoint configured (uat/prod today) — still never show an
+      // error page; the retry just cannot be made clean from here.
+      const bounce = redirectToLoginAfterFailedCallback(c, 'session-reused');
+      if (bounce) return bounce;
+      throw new UnauthorizedError(
+        'Shopify returned a different customer than the one just verified — sign out of Shopify and try again',
+        { code: 'capi_session_reused' },
+      );
+    }
   }
 
   // The real session id is a 30-day bearer credential — never put it in a
@@ -738,13 +875,43 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
 // in a way that leaves the client unable to finish clearing its own state. The
 // swallow is reported rather than hidden, since a session that outlives its
 // logout is exactly what this endpoint exists to prevent.
+/**
+ * Shopify's RP-initiated-logout URL for this session, or null when unconfigured
+ * or when there's no id_token to send. Confirmed against Shopify directly
+ * (verified against Shopify directly): end_session_endpoint REJECTS a request with no
+ * id_token_hint ("Invalid id_token") rather than logging out anonymously, so a
+ * URL built without one wouldn't just skip the clean return trip — Shopify's
+ * session would survive untouched, silently defeating the caller.
+ */
+function buildShopifyLogoutUrl(idToken: string | undefined): string | null {
+  const { CAPI_END_SESSION_ENDPOINT, CAPI_POST_LOGOUT_REDIRECT_URI } = env;
+  if (!CAPI_END_SESSION_ENDPOINT || !CAPI_POST_LOGOUT_REDIRECT_URI || !idToken) {
+    return null;
+  }
+
+  const url = new URL(CAPI_END_SESSION_ENDPOINT);
+  url.searchParams.set('post_logout_redirect_uri', CAPI_POST_LOGOUT_REDIRECT_URI);
+  url.searchParams.set('id_token_hint', idToken);
+  return url.toString();
+}
+
 export async function capiLogoutHandler(c: Context): Promise<Response> {
   const header = c.req.header('authorization') ?? '';
   const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-  // Ignore any other bearer credential shape your app might also accept on the
-  // same header — only our own opaque session ids are ours to delete.
+  // Ignore any other bearer shape on the same header (e.g. a Shopify Storefront
+  // customerAccessToken) — only our own opaque session ids are ours to delete.
+  let logoutUrl: string | null = null;
   if (bearer.startsWith('capi_sess_')) {
     try {
+      // Read the id_token BEFORE deleting the record — it is the only proof of
+      // which Shopify session this was, and Shopify REQUIRES it as
+      // id_token_hint to end that session (a request without one is rejected
+      // outright, see buildShopifyLogoutUrl). A missing record — Shopify's
+      // session outliving ours because ours expired or was revoked
+      // server-side — means there's no id_token left to send, so this
+      // returns null rather than a URL Shopify would just reject.
+      const record = await getCapiSession(bearer);
+      logoutUrl = buildShopifyLogoutUrl(record?.idToken);
       await deleteCapiSession(bearer);
       // middleware/customer.ts caches the resolved customer per session id for
       // 60s; without dropping that key too, requireCustomer keeps admitting the
@@ -761,7 +928,7 @@ export async function capiLogoutHandler(c: Context): Promise<Response> {
       });
     }
   }
-  return ok(c, { revoked: true });
+  return ok(c, { revoked: true, logoutUrl });
 }
 
 // Trades a one-time claim token (from the callback redirect) for the real
