@@ -134,7 +134,7 @@ real measured latency numbers if you need to set expectations with a client/PM.
 | `shopify-admin/customer-create.ts` | Creates a brand-new Shopify customer for a phone/email-verified signup with no existing record. **Read the comment on `CREATE_CUSTOMER_MUTATION` before touching this file** — see "Known gotchas" below. |
 | `shopify-admin/synthetic-email.ts` | Shopify requires every customer to have an email. A phone-only signup gets a synthetic placeholder here until a real address is learned later (e.g. from a checkout). **The domain here is the most project-specific decision in the whole kit — see below.** |
 | `routes/index.ts`, `routes/handlers.ts`, `routes/schemas.ts` | The Hono routes: OTP send/verify/resend/details, the IdP endpoints (`/authorize`, `/token`, `/.well-known/*`, JWKS) if using the custom IdP, and the CAPI endpoints (`/capi/start`, `/capi/callback`, `/capi/claim`, `/capi/logout`). |
-| `middleware/customer.ts` | Route-gating middleware — resolves a `capi_sess_<uuid>` session id from the `Authorization: Bearer` header to a local customer. If your app also has some other login path issuing a different bearer-credential shape on the same header, branch on a prefix the same way this file's own comment describes — resolve each kind through its own function, cached under its own key prefix. |
+| `middleware/customer.ts` | Route-gating middleware — resolves a `capi_sess_<uuid>` session id from the `Authorization: Bearer` header to a local customer. `requireCustomer` 401s when missing/invalid; `optionalCustomer` + `readOptionalCustomer` resolve the same credential without ever throwing, for a route that serves guests and signed-in shoppers from one handler (wishlist, PDP) — an invalid/expired token degrades to guest rather than 401ing a page that renders fine without auth. If your app also has some other login path issuing a different bearer-credential shape on the same header, branch on a prefix the same way this file's own comment describes — resolve each kind through its own function, cached under its own key prefix. |
 | `repositories/customers.ts`, `customer_signup.ts` | Postgres upsert logic for the local `Customer` row, keyed by `shopifyId`, lazily backfilled from Shopify on a cache miss. |
 | `repositories/idp_interactions.ts`, `idp_auth_codes.ts` | Redis-backed short-lived OIDC handshake state (custom-IdP path only). |
 | `examples/using-call-with-capi-expiry.ts` | Not imported by anything — a reference showing `callWithCapiExpiry`'s two real usage shapes (throw vs. return-null) with the surrounding project-specific logic stripped out. Copy the pattern into your own handlers rather than importing this file. |
@@ -313,8 +313,9 @@ Everything above, plus:
 - **OTP rate limits: keep the IP cap meaningfully above the per-identity cap, not roughly equal.**
   One IP is legitimately many people (shared office/home WiFi) — if the two caps are close, the
   IP cap becomes the effective limit the moment 2-3 people share a connection, defeating the
-  point of having a separate per-identity limit at all. The reference numbers here are 20/hour +
-  40/day per identity, 60/hour per IP (a ~3x ratio) — the 30-second resend cooldown
+  point of having a separate per-identity limit at all. The reference numbers here are 5/hour +
+  10/day per identity, 20/hour per IP (a ~4x ratio, matching the industry-standard 3-5/hour range
+  for OTP sends) — the 30-second resend cooldown
   (`otp-engine`'s own challenge TTL logic) is the actual anti-pumping-fraud throttle; the
   hourly/daily counters are a looser backstop and shouldn't be what a customer trips over a slow
   SMS delivery.

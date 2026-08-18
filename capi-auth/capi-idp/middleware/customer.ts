@@ -7,7 +7,7 @@ import {
   UnauthorizedError,
 } from '@devxcommerce/bff-core';
 import { Prisma } from '@prisma/client';
-import type { MiddlewareHandler } from 'hono';
+import type { Context, MiddlewareHandler } from 'hono';
 import { env } from '../config/env';
 import { prisma } from '../db/client';
 import { getCapiCustomer } from '../services/capi/customer';
@@ -76,7 +76,10 @@ async function resolveCapiCustomer(sessionId: string): Promise<Customer | null> 
             await deleteCapiSession(sessionId);
           } catch (cleanupErr) {
             log.warn(
-              { err: cleanupErr, sessionId: createHash('sha256').update(sessionId).digest('hex').slice(0, 32) },
+              {
+                err: cleanupErr,
+                sessionId: createHash('sha256').update(sessionId).digest('hex').slice(0, 32),
+              },
               'failed to delete revoked CAPI session',
             );
           }
@@ -116,6 +119,11 @@ async function resolveCapiCustomer(sessionId: string): Promise<Customer | null> 
   );
 }
 
+const bearer = (c: Context): string => {
+  const header = c.req.header('authorization') ?? '';
+  return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+};
+
 // Gates customer-scoped routes on a valid CAPI session id, sent as
 // `Authorization: Bearer capi_sess_<uuid>`.
 //
@@ -125,8 +133,7 @@ async function resolveCapiCustomer(sessionId: string): Promise<Customer | null> 
 // its own function, cached under its own key prefix, so the two can never
 // collide even though both ultimately hash their credential the same way.
 export const requireCustomer: MiddlewareHandler = async (c, next) => {
-  const header = c.req.header('authorization') ?? '';
-  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  const token = bearer(c);
   if (!token) throw new UnauthorizedError('Sign in to continue', { code: 'auth_required' });
 
   const customer = await resolveCapiCustomer(token);
@@ -137,3 +144,29 @@ export const requireCustomer: MiddlewareHandler = async (c, next) => {
   c.set('customer', customer);
   await next();
 };
+
+// For routes that serve guests and signed-in shoppers from one handler: resolves
+// the bearer when present, never throws. An invalid/expired token is treated as a
+// guest rather than a 401 — the shopper still gets the public payload. Handlers
+// must read `customer` as possibly-undefined (see readOptionalCustomer).
+export const optionalCustomer: MiddlewareHandler = async (c, next) => {
+  const token = bearer(c);
+  if (token) {
+    try {
+      const customer = await resolveCapiCustomer(token);
+      if (customer) c.set('customer', customer);
+    } catch (err) {
+      // This middleware must never throw: these routes answer guests too, so a
+      // resolution failure (unconfigured CAPI endpoint, upstream outage) degrades
+      // to the guest payload instead of 5xxing a page that renders without auth.
+      log.warn({ err }, 'optionalCustomer: token resolution failed, continuing as guest');
+    }
+  }
+  await next();
+};
+
+// ContextVariableMap types `customer` as always-present and Hono can't express
+// per-route optionality, so the cast is the only way to model an optionalCustomer
+// route honestly. Never use this on a requireCustomer route.
+export const readOptionalCustomer = (c: Context): Customer | undefined =>
+  c.get('customer') as Customer | undefined;

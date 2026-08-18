@@ -12,12 +12,14 @@ import { redis, TooManyRequestsError } from '@devxcommerce/bff-core';
 // Despite the name, this bounds any single username identity — email as much
 // as phone (checkOtpSendRateLimit is called with whatever channel the caller
 // used; identityKey() just normalizes case, it doesn't branch by channel).
-const PHONE_HOURLY_MAX = 20;
-const PHONE_DAILY_MAX = 40;
+// 5/hour = 1 initial send + 4 resends, matching the industry-standard 3-5/hour
+// range for OTP send limits.
+const PHONE_HOURLY_MAX = 5;
+const PHONE_DAILY_MAX = 10;
 // Kept meaningfully above PHONE_HOURLY_MAX (not equal) — one IP is legitimately
 // many identities (office WiFi, a shared connection), so an equal cap would
 // make the IP limit bind before any single identity's own limit does.
-const IP_HOURLY_MAX = 60;
+const IP_HOURLY_MAX = 20;
 // Verify is capped far above a real customer's need (a legitimate one submits
 // once or twice) but far below what brute-forcing a 6-digit code takes. The
 // per-challenge budget in claimAttempt is the primary control; this bounds the
