@@ -81,7 +81,7 @@ Both pieces assume:
 4. **Wire the routes** — `capi-idp/routes/index.ts` mounts everything under one Hono router
    (`/otp/send`, `/otp/verify`, `/otp/details`, `/otp/resend`, the IdP endpoints if you're using
    them, the CAPI endpoints). Mount it in your app's entry point at whatever base path you want —
-   `issuer()` and the CAPI handoff URL in `routes/handlers.ts` currently assume `/auth`, adjust if
+   `issuer()` in `routes/shared.ts` and the CAPI handoff URL in `routes/otp_handlers.ts` currently assume `/auth`, adjust if
    you mount it elsewhere.
 5. **Generate an IdP signing key** (see `IDP_SIGNING_KEY` below) — required for any real
    (non-local) environment, and only relevant if you're using the custom IdP.
@@ -133,7 +133,7 @@ real measured latency numbers if you need to set expectations with a client/PM.
 | `shopify-admin/customer-lookup.ts` | Look up an existing Shopify customer by phone or email via the Admin API — the "does this identity already exist" check for a verified OTP. Only relevant to the custom-IdP path (Shopify's own hosted login handles this itself). |
 | `shopify-admin/customer-create.ts` | Creates a brand-new Shopify customer for a phone/email-verified signup with no existing record. **Read the comment on `CREATE_CUSTOMER_MUTATION` before touching this file** — see "Known gotchas" below. |
 | `shopify-admin/synthetic-email.ts` | Shopify requires every customer to have an email. A phone-only signup gets a synthetic placeholder here until a real address is learned later (e.g. from a checkout). **The domain here is the most project-specific decision in the whole kit — see below.** |
-| `routes/index.ts`, `routes/handlers.ts`, `routes/schemas.ts` | The Hono routes: OTP send/verify/resend/details, the IdP endpoints (`/authorize`, `/token`, `/.well-known/*`, JWKS) if using the custom IdP, and the CAPI endpoints (`/capi/start`, `/capi/callback`, `/capi/claim`, `/capi/logout`). |
+| `routes/index.ts`, `routes/otp_handlers.ts`, `routes/idp_handlers.ts`, `routes/capi_handlers.ts`, `routes/shared.ts`, `routes/schemas.ts` (see `routes/variables.md`) | The Hono routes: OTP send/verify/resend/details, the IdP endpoints (`/authorize`, `/token`, `/.well-known/*`, JWKS) if using the custom IdP, and the CAPI endpoints (`/capi/start`, `/capi/callback`, `/capi/claim`, `/capi/logout`). |
 | `middleware/customer.ts` | Route-gating middleware — resolves a `capi_sess_<uuid>` session id from the `Authorization: Bearer` header to a local customer. `requireCustomer` 401s when missing/invalid; `optionalCustomer` + `readOptionalCustomer` resolve the same credential without ever throwing, for a route that serves guests and signed-in shoppers from one handler (wishlist, PDP) — an invalid/expired token degrades to guest rather than 401ing a page that renders fine without auth. If your app also has some other login path issuing a different bearer-credential shape on the same header, branch on a prefix the same way this file's own comment describes — resolve each kind through its own function, cached under its own key prefix. |
 | `repositories/customers.ts`, `customer_signup.ts` | Postgres upsert logic for the local `Customer` row, keyed by `shopifyId`, lazily backfilled from Shopify on a cache miss. |
 | `repositories/idp_interactions.ts`, `idp_auth_codes.ts` | Redis-backed short-lived OIDC handshake state (custom-IdP path only). |
@@ -193,7 +193,7 @@ This has to happen by clicking through Shopify's own UI — there's no API for i
    (discoverable per-shop; Shopify's docs describe the exact discovery path).
 5. Your app's "sign in" button redirects straight to `CAPI_AUTHORIZE_ENDPOINT` — the customer logs
    in on Shopify's own hosted screen, then lands back on your `CAPI_REDIRECT_URI` with a code.
-   `capi-idp/routes/handlers.ts`'s CAPI callback handler + `capi/token_exchange.ts` take it from
+   `capi-idp/routes/capi_handlers.ts`'s CAPI callback handler + `capi/token_exchange.ts` take it from
    there.
 
 ### If you're building the full custom-IdP flow (your own login screen)

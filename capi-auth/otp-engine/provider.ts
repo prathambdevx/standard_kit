@@ -1,4 +1,4 @@
-// Selects which OTP engine your app uses. Callers (routes/handlers.ts) import
+// Selects which OTP engine your app uses. Callers (routes/otp_handlers.ts) import
 // from here and never from an implementation directly, so swapping providers
 // never touches a call site.
 //

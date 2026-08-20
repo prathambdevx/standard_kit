@@ -1,20 +1,24 @@
 import { Hono } from 'hono';
 import {
-  authorizeHandler,
   capiCallbackHandler,
   capiClaimSessionHandler,
   capiLogoutHandler,
+  startCapiAuthorizeHandler,
+} from './capi_handlers';
+import {
+  authorizeHandler,
   discoveryHandler,
   jwksHandler,
   logoutHandler,
-  resendOtpHandler,
-  sendOtpHandler,
-  startCapiAuthorizeHandler,
-  submitOtpDetailsHandler,
   tokenHandler,
   userinfoHandler,
+} from './idp_handlers';
+import {
+  resendOtpHandler,
+  sendOtpHandler,
+  submitOtpDetailsHandler,
   verifyOtpHandler,
-} from './handlers';
+} from './otp_handlers';
 
 // In-house phone/email OTP + a custom OIDC IdP, all mounted under one router.
 // otp/* is your own customer-facing API; idp/* is the OIDC wire protocol

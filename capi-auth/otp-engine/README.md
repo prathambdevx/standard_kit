@@ -17,7 +17,7 @@ only handles storage/attempt-limiting around it.
 | ✅ | Rate-limit IP can't be spoofed (proven: a forged leading `X-Forwarded-For` entry doesn't reset the cap) | `rate_limit.ts` |
 | ✅ | Rate-limiter failure stops sending rather than going unlimited (proven: verified against a real broken Redis call, not just read) | `rate_limit.ts` |
 | ✅ | Expired codes give a clear "expired" response, never confused with "not found" | `repositories/otp_challenges.ts` |
-| ✅ | Sending an OTP request looks the same whether the account exists or not (no enumeration) | `routes/handlers.ts` |
+| ✅ | Sending an OTP request looks the same whether the account exists or not (no enumeration) | `routes/otp_handlers.ts` |
 | ✅ | The real OTP code is never written to any log | `sms.ts`, `email.ts` |
 | ✅ | Every record self-expires in Redis — no cleanup job to forget | `repositories/otp_challenges.ts`, `otp_attempts.ts` |
 
