@@ -85,15 +85,12 @@ choice in the whole kit), a `hasRealEmail` flag that had to be threaded through 
 Legacy phone-only customers self-heal with no batch job: the first time one logs in, the gate collects
 their email. Ones who never come back never needed an email anyway.
 
-### The edge case you must decide on
+### One known gap
 
-The customer supplies an email (or phone) that **already belongs to another Shopify customer**.
-`customer-update.ts` throws `ConflictError` with `customer_email_taken` / `customer_phone_taken` — the
-same codes `customer-create.ts` uses, so existing error copy works unchanged — and the signup claim is
-released so they can retry with a different value. That's a deliberate default, not the only option: a
-real account-merge flow is out of scope for this kit. Be aware that this turns what used to be a
-silently-logged background conflict into something that **blocks that customer's login** until they
-enter a different address, which is the one place this rule is harsher than what it replaced.
+If the customer supplies an identifier that already belongs to a *different* Shopify customer, they
+can't complete the gate — they get an actionable error and can retry with another value, but the
+underlying "you have two accounts" situation is **not** solved here. This is the one place the rule is
+harsher than what it replaced. Tracked in [Open items](#open-items--known-gaps-deliberately-unsolved).
 
 ## Prerequisites
 
@@ -439,3 +436,39 @@ Everything above, plus:
   the challenge/attempt state machine) is genuinely generic — built on `@devxcommerce/bff-core`
   primitives any project using that shared package already has, not on project-specific business
   logic.
+
+## Open items — known gaps, deliberately unsolved
+
+Not bugs, and not oversights — things this kit knowingly does not handle, so you can decide whether
+your project needs to.
+
+### Identifier collision at the completeness gate
+
+**What happens.** A customer with an incomplete profile supplies an email (or phone) that already
+belongs to a *different* Shopify customer record. Shopify enforces uniqueness on both, so
+`customerUpdate` is rejected and `customer-update.ts` throws `ConflictError` —
+`customer_email_taken` / `customer_phone_taken`, the same codes `customer-create.ts` already uses, so
+existing error copy works unchanged. The signup claim is released, so they can retry with a different
+value. What they cannot do is get into the account they were trying to complete.
+
+**Why it isn't solved.** Almost always the real situation is that one human owns two customer records
+— one from a phone-only guest checkout, one from an email signup years earlier. Reconciling those is an
+account merge, and a merge is a product decision this kit has no business making for you: which record
+survives, what happens to the orders/addresses/wishlist on the losing one, whether a customer can
+trigger it themselves at all. Guessing would be worse than refusing.
+
+**How rare.** Bounded by the size of your incomplete-profile segment — in the store this kit came from
+that was 1,080 of 612,884 customers (0.18%), and only the subset of those who *also* own a second
+record with the address they type is affected. Related datapoint from the same audit: **zero** emails
+were shared across two customer records out of 612,884 — which is precisely *why* the write gets
+rejected rather than silently merging.
+
+**If you do want to close it**, the shape that doesn't compromise security: detect the conflict, then
+make the customer prove they own the colliding account (send an OTP to *that* identifier) before doing
+anything. Only after that proof do you have the standing to offer either a merge or "sign in with that
+account instead." Never merge on an unproven typed string — that is an account-takeover primitive.
+
+**Before this rule existed** the same conflict occurred in the background healing path
+(`reconcileRealEmail`, now deleted): it returned `'conflict'`, logged it, and moved on. Nobody was
+blocked, and nobody's data was fixed either. Trading a silent no-op for a loud, actionable stop is the
+intended change — just know it's a change.
