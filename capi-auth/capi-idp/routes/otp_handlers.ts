@@ -14,7 +14,7 @@ import { log, NotFoundError, TooManyRequestsError, ValidationError } from '@devx
 import type { Context } from 'hono';
 import { deleteCookie, getCookie } from 'hono/cookie';
 import { env } from '../../config/env';
-import { checkEmailDomain } from '../email-domain';
+import { checkEmailDomain, isWellFormedEmail } from '../email-domain';
 import { parseBody } from '../../lib/parse-body';
 import { ok } from '../../lib/response';
 import { createCustomerFromSignup } from '../../repositories/customer_signup';
@@ -34,7 +34,11 @@ import {
   checkOtpVerifyRateLimit,
 } from '../../services/otp_engine/rate_limit';
 import { createShopifyCustomer } from '../../services/shopify/admin/customer-create';
-import { isSyntheticEmail } from '../../services/shopify/admin/synthetic-email';
+import {
+  findCustomerByEmail,
+  findCustomerByPhone,
+} from '../../services/shopify/admin/customer-lookup';
+import { updateShopifyCustomer } from '../../services/shopify/admin/customer-update';
 import { otpDetailsSchema, otpResendSchema, otpSendSchema, otpVerifySchema } from './schemas';
 import { bffBaseUrl, INTERACTION_COOKIE, missingCapiConfig } from './shared';
 function clientIp(c: Context): string {
@@ -46,19 +50,6 @@ function clientIp(c: Context): string {
 // Sends an OTP to the customer's phone or email address.
 export async function sendOtpHandler(c: Context): Promise<Response> {
   const body = await parseBody(c, otpSendSchema);
-  // A synthetic address is a placeholder we minted for a phone-only signup, not
-  // an inbox — it is non-deliverable, so an OTP sent there could never arrive,
-  // and accepting it would let someone claim an account by typing a value
-  // derivable from a phone number alone. Phone OTP is that customer's route in.
-  // Deliberately the same message and code as the schema's own email refine, so
-  // this is indistinguishable from a malformed address: a synthetic value is
-  // derivable from a phone number alone, so any hint that one maps to a real
-  // account would turn this endpoint into a phone-number enumeration oracle.
-  if (body.channel === 'email' && isSyntheticEmail(body.username)) {
-    throw new ValidationError('Email OTP requires a valid email address', {
-      code: 'invalid_payload',
-    });
-  }
   await checkOtpSendRateLimit(body.username, clientIp(c));
   const { otpId } = await createOtp(body.username, body.channel);
   return ok(c, { otpId });
@@ -95,25 +86,35 @@ export async function verifyOtpHandler(c: Context): Promise<Response> {
   // phone:"<value>", which can never match an address, so routing an email
   // login through it pushed every existing email customer into signup — where
   // Shopify then rejected the duplicate address as a 502.
-  const customer =
+  const lookup =
     result.channel === 'email'
       ? await findOrLazyFillByEmail(result.username)
       : await findOrLazyFillByPhone(result.username);
-  if (!customer) {
-    // Shopify has never seen this phone/address — nothing to prefill from.
-    // On the email channel
-    // the address is already proven, so prefill it and drop the requirement
-    // rather than asking again for what was just verified (the submit handler
-    // binds the verified value regardless of what the client sends).
-    const verifiedEmail = result.channel === 'email' ? result.username : null;
-    return ok(c, {
-      status: 'details_required' as const,
-      otpId: body.otpId,
-      emailRequired: !verifiedEmail,
-      prefill: { firstName: null, lastName: null, email: verifiedEmail },
-    });
+  if (lookup.status === 'ready') {
+    return respondWithCustomerSession(c, lookup.customer, challenge?.createdAt ?? null);
   }
-  return respondWithCustomerSession(c, customer, challenge?.createdAt ?? null);
+
+  // Two cases land here and both go through the details form: a genuinely new
+  // customer ('new'), and one Shopify already knows whose profile is missing the
+  // other identifier ('incomplete' — see IdentityLookup). The 'incomplete' case
+  // is deliberately NOT logged straight in: this kit's rule is that every
+  // customer has both a usable email and a phone, and this is the one gate where
+  // that can be enforced. Their existing record is patched, never duplicated, so
+  // order history survives — the submit handler decides create-vs-patch itself.
+  const verifiedEmail = result.channel === 'email' ? result.username : null;
+  const admin = lookup.status === 'incomplete' ? lookup.admin : null;
+  return ok(c, {
+    status: 'details_required' as const,
+    otpId: body.otpId,
+    emailRequired: !verifiedEmail,
+    // Prefilled from what Shopify already holds, so a returning customer isn't
+    // retyping their own name to supply one missing field.
+    prefill: {
+      firstName: admin?.firstName ?? null,
+      lastName: admin?.lastName ?? null,
+      email: verifiedEmail,
+    },
+  });
 }
 
 // Same duration as OTP_TTL_MS in services/otp_engine/index.ts, but counted from when
@@ -165,6 +166,14 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
       code: 'invalid_payload',
     });
   }
+  // Symmetric to the email requirement above — the rule is that every customer
+  // has BOTH. Only reachable on the email channel, where phone is the field the
+  // form asks for (on the mobile channel the OTP already proved it).
+  if (!phone) {
+    throw new ValidationError('A phone number is required to finish signup', {
+      code: 'otp_details_phone_missing',
+    });
+  }
   // Claim the challenge BEFORE calling Shopify, not after: a claim placed at
   // the end of the flow is cleanup, not a lock — two concurrent submits (a
   // double-tap on a flaky connection is enough, no attacker required) could
@@ -176,16 +185,40 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
   if (!claimed) {
     throw new NotFoundError('OTP was not verified for this id', { code: 'otp_not_verified' });
   }
-  let shopifyCustomer: Awaited<ReturnType<typeof createShopifyCustomer>>;
+  // Create vs. patch is decided HERE, by re-resolving the identity against
+  // Shopify — never from a flag the client round-trips, which would be a way to
+  // graft an email onto someone else's account. An existing customer must be
+  // PATCHED: customerUpdate keeps their id, so their orders and addresses stay
+  // attached, where customerCreate would collide on the identifier they already
+  // hold or mint a duplicate showing none of their history.
+  const existing =
+    challenge.channel === 'mobile'
+      ? await findCustomerByPhone(challenge.username)
+      : await findCustomerByEmail(challenge.username);
+
+  let shopifyCustomer: { id: string; email: string | null };
   try {
-    shopifyCustomer = await createShopifyCustomer({
-      phone,
-      email,
-      firstName: body.firstName,
-      lastName: body.lastName,
-      acceptEmailMarketing: body.acceptEmailMarketing,
-      acceptSmsMarketing: body.acceptSmsMarketing,
-    });
+    shopifyCustomer = existing
+      ? await updateShopifyCustomer({
+          id: existing.id,
+          // Only ever fills a BLANK field. The OTP proved one identifier; the
+          // other is merely typed, so overwriting a value Shopify already holds
+          // would let a typed string replace a real one on a live account.
+          // Marketing consent is deliberately not applied here either — an
+          // existing customer supplying a missing field is not newly consenting.
+          ...(isWellFormedEmail(existing.email) ? {} : { email }),
+          ...(existing.phone ? {} : { phone }),
+          ...(existing.firstName ? {} : { firstName: body.firstName }),
+          ...(existing.lastName ? {} : { lastName: body.lastName }),
+        })
+      : await createShopifyCustomer({
+          phone,
+          email,
+          firstName: body.firstName,
+          lastName: body.lastName,
+          acceptEmailMarketing: body.acceptEmailMarketing,
+          acceptSmsMarketing: body.acceptSmsMarketing,
+        });
   } catch (err) {
     // No Shopify customer was created, so this challenge hasn't been spent —
     // release it. Without this the customer is stranded on the very errors

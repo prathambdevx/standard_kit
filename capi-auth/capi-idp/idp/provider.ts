@@ -4,12 +4,10 @@
 //
 // A real trap worth avoiding: don't derive the ID token's email from the
 // Shopify customer id on the fly when Shopify has no email on file (e.g.
-// `${sub}@otp.example.com`) — that's a second, independent synthetic-email
-// scheme that will disagree with whatever scheme your signup path already
-// uses (see shopify-admin/synthetic-email.ts), and the two schemes drifting
-// apart is a real bug class. Always take the already-resolved local Customer
-// row's `email` column, which should be guaranteed non-null by construction —
-// no synthetic-email derivation should happen at this layer at all.
+// `${sub}@otp.example.com`). Placeholder addresses are exactly what the signup
+// gate exists to prevent (repositories/customers.ts's IdentityLookup) — a
+// customer reaching this layer always has a real one. Always take the
+// already-resolved local Customer row's `email` column.
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { log } from '@devxcommerce/bff-core';
 import { jwtVerify, SignJWT } from 'jose';

@@ -1,13 +1,13 @@
 // Resolves the authenticated customer's identity from a Shopify Customer
 // Account API (CAPI) access token — the CAPI-side counterpart of
 // services/shopify/storefront/customer.ts's getCustomerByAccessToken, used by
-// middleware/customer.ts to satisfy requireCustomer for a CAPI session
-// Field names confirmed against Shopify's
-// Customer Account API schema reference (shopify.dev/docs/api/customer/latest/
-// objects/Customer, 2026-08-06): `id: ID!`, `displayName: String!`,
-// `emailAddress: CustomerEmailAddress` (nullable, nested `emailAddress: String`).
-import { shopifyCustomerAccountGraphQL } from '@devxcommerce/bff-core';
-import { z } from 'zod';
+// middleware/customer.ts to satisfy requireCustomer for a CAPI session.
+// Field names confirmed against Shopify's Customer Account API schema reference
+// (shopify.dev/docs/api/customer/latest/objects/Customer, 2026-08-06):
+// `id: ID!`, `displayName: String!`, `emailAddress: CustomerEmailAddress`
+// (nullable, nested `emailAddress: String`).
+import { log, shopifyCustomerAccountGraphQL } from '@devxcommerce/bff-core';
+import { isWellFormedEmail } from '../email-domain';
 
 const CUSTOMER_IDENTITY_QUERY = `
   query CapiCustomerIdentity {
@@ -32,32 +32,38 @@ interface CapiCustomerIdentityResponse {
 export type CapiCustomer = {
   shopifyId: string;
   name: string;
-  email: string;
-  hasRealEmail: boolean; // false when `email` below is the synthesized placeholder, not an address Shopify holds
+  email: string; // always a real, usable address — see getCapiCustomer
 };
 
-// Stricter than a hand-rolled regex — a loose shape check can pass addresses
-// Shopify's own cartBuyerIdentityUpdateByEmail then rejects at checkout time.
-const EMAIL_SCHEMA = z.string().email();
-
-/** Resolves a CAPI access token to the authenticated customer's identity; null when Shopify returns no customer. */
+/**
+ * Resolves a CAPI access token to the authenticated customer's identity.
+ *
+ * Null when Shopify returns no customer, AND when the customer has no usable
+ * email. The signup gate (repositories/customers.ts's IdentityLookup) means no
+ * session should ever be issued to such a customer, so reaching here is an
+ * invalid state — a record mutated outside this flow (Shopify admin, POS, an
+ * import) or a session predating the rule. Answering null rather than throwing
+ * makes the caller 401, which sends them back through the gate that fills the
+ * missing address in: self-healing instead of a hard 502. Logged, because a
+ * silent one would hide a real data problem.
+ */
 export async function getCapiCustomer(accessToken: string): Promise<CapiCustomer | null> {
   const { customer } = await shopifyCustomerAccountGraphQL<CapiCustomerIdentityResponse>(
     accessToken,
     CUSTOMER_IDENTITY_QUERY,
   );
   if (!customer) return null;
-  const real = customer.emailAddress?.emailAddress;
-  const hasRealEmail = !!real && EMAIL_SCHEMA.safeParse(real).success;
+  const email = customer.emailAddress?.emailAddress;
+  if (!isWellFormedEmail(email)) {
+    log.warn(
+      { shopifyId: customer.id, hasEmail: !!email },
+      'CAPI customer has no usable email — refusing the session so re-login routes them through the signup gate',
+    );
+    return null;
+  }
   return {
     shopifyId: customer.id,
     name: customer.displayName,
-    // CAPI customers without an email are rare — synthesize a stable unique
-    // address, matching getCustomerByAccessToken's fallback for the same case.
-    // It exists to key your own brand-DB row, and must never be written back to
-    // Shopify: `hasRealEmail` is what callers check before putting this on a
-    // cart, order, or anything a customer sees.
-    email: hasRealEmail ? (real as string) : `${customer.id.split('/').pop()}@noemail.bsc`,
-    hasRealEmail,
+    email: email as string,
   };
 }

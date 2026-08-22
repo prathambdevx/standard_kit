@@ -1,10 +1,21 @@
 import { resolveMx as nodeResolveMx } from 'node:dns/promises';
+import { z } from 'zod';
 
 // A cold lookup on a real domain can take over a second (measured: devxlabs.ai
 // took 1053ms uncached) — 800ms would misclassify real domains as inconclusive.
 const MX_LOOKUP_TIMEOUT_MS = 1500;
 
 export type DomainCheckResult = 'deliverable' | 'undeliverable' | 'inconclusive';
+
+// Stricter than a hand-rolled regex — a loose /^[^\s@]+@[^\s@]+\.[^\s@]+$/ passes
+// shapes (trailing/double dot, underscore or leading hyphen in the domain) that
+// Shopify's own writes then reject.
+const EMAIL_SCHEMA = z.string().email();
+
+/** Shape check only — pair with checkEmailDomain() when the domain matters too. */
+export function isWellFormedEmail(email: string | null | undefined): boolean {
+  return !!email && EMAIL_SCHEMA.safeParse(email).success;
+}
 
 let resolveMxImpl = nodeResolveMx;
 

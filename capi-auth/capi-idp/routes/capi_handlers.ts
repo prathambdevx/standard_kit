@@ -523,9 +523,9 @@ export async function capiCheckoutGrantHandler(c: Context): Promise<Response> {
   const grant = `idp_silent_${randomUUID()}`;
   await putSilentGrant(grant, {
     shopifyId: customer.shopifyId,
-    // Same synthetic shape capi/customer.ts falls back to, so a customer with
-    // no real email on file still gets a usable grant.
-    email: customer.email || `${customer.shopifyId.split('/').pop()}@noemail.bsc`,
+    // Always a real address: the signup gate refuses to issue a session to a
+    // customer without one, so there is nothing to fall back to here.
+    email: customer.email,
   });
 
   // Assembled here rather than in the app so the caller never has to know the
