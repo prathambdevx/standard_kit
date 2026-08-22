@@ -166,14 +166,9 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
       code: 'invalid_payload',
     });
   }
-  // Symmetric to the email requirement above — the rule is that every customer
-  // has BOTH. Only reachable on the email channel, where phone is the field the
-  // form asks for (on the mobile channel the OTP already proved it).
-  if (!phone) {
-    throw new ValidationError('A phone number is required to finish signup', {
-      code: 'otp_details_phone_missing',
-    });
-  }
+  // Phone is deliberately NOT required to match it: email is the channel that has
+  // to work (order confirmations, receipts), phone is only a login convenience.
+  // An email-channel signup with no phone is a complete customer.
   // Claim the challenge BEFORE calling Shopify, not after: a claim placed at
   // the end of the flow is cleanup, not a lock — two concurrent submits (a
   // double-tap on a flaky connection is enough, no attacker required) could
@@ -207,7 +202,7 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
           // Marketing consent is deliberately not applied here either — an
           // existing customer supplying a missing field is not newly consenting.
           ...(isWellFormedEmail(existing.email) ? {} : { email }),
-          ...(existing.phone ? {} : { phone }),
+          ...(!existing.phone && phone ? { phone } : {}),
           ...(existing.firstName ? {} : { firstName: body.firstName }),
           ...(existing.lastName ? {} : { lastName: body.lastName }),
         })

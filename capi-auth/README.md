@@ -34,12 +34,15 @@ regardless of which Shopify integration path you pick, or with no Shopify at all
 | **`otp-engine/`** | Generate, hash, store, rate-limit, and verify a 6-digit OTP over SMS/email. Delivery is pluggable — write your own vendor integration, or leave it mocked outside production. | No — usable standalone for any phone/email login. |
 | **`capi-idp/`** | Turns your BFF into a real OIDC identity provider (`/authorize`, `/token`, `/.well-known/openid-configuration`, JWKS) that Shopify's Customer Account API can register as a *custom* login provider, plus the client-side half that exchanges Shopify's own CAPI grant for a session. | Yes, in practice, if you want the full custom-IdP flow — it expects a verified-OTP identity to hand off. The OIDC/OAuth mechanics themselves don't care how you verified the customer, though. |
 
-## The one rule: every customer has an email AND a phone
+## The one rule: every customer has a usable email
 
 This kit enforces a single invariant at login, and a lot of complexity disappears because of it.
+**Email is mandatory; phone is not.** Email is the channel that actually has to work — order
+confirmations, receipts, password-less recovery, marketing. A phone is an OTP login convenience, so a
+customer who signs up by email and never gives one is complete as far as this kit is concerned.
 
-**Shopify does not require either identifier.** Verified live against the Admin API — `customerCreate`
-accepts a customer with no email, with no phone, and with *neither*:
+**Shopify itself requires neither.** Verified live against the Admin API — `customerCreate` accepts a
+customer with no email, with no phone, and with *neither*:
 
 | Input | Result |
 |---|---|
@@ -50,8 +53,8 @@ accepts a customer with no email, with no phone, and with *neither*:
 Checkout doesn't force it either: Shopify's checkout wants *a* contact method, and if the store's
 customer-contact setting permits phone, a customer completes checkout and gets SMS confirmations with
 no email ever recorded. That's how a real store ends up with phone-only customers who nonetheless have
-full order histories. **So "every customer has both" is your product rule, not a platform constraint —
-and this auth layer is the only place it can be enforced.**
+full order histories. **So "every customer has a usable email" is your product rule, not a platform
+constraint — and this auth layer is the only place it can be enforced.**
 
 ### How the gate works
 
@@ -59,11 +62,15 @@ and this auth layer is the only place it can be enforced.**
 
 | Status | Meaning | What happens |
 |---|---|---|
-| `ready` | complete profile | logged in normally |
-| `incomplete` | Shopify knows them, but one identifier is missing or unusable | **not** logged in — `details_required`, prefilled with the name Shopify already holds |
+| `ready` | has a usable email | logged in normally |
+| `incomplete` | Shopify knows them, but has no usable email | **not** logged in — `details_required`, prefilled with the name Shopify already holds |
 | `new` | Shopify has never seen this identity | `details_required`, a genuine signup |
 
-For `incomplete`, `submitOtpDetailsHandler` **patches their existing record** (`customerUpdate` via
+Only the **phone** channel can produce `incomplete` — an email-channel login has by definition just
+proven a usable address, so `findOrLazyFillByEmail` never returns it.
+
+The details form asks for an email (required) and optionally a phone. For `incomplete`,
+`submitOtpDetailsHandler` **patches their existing record** (`customerUpdate` via
 `shopify-admin/customer-update.ts`), so **their orders and addresses stay attached**. It decides
 create-vs-patch by re-resolving the identity against Shopify itself — never from a flag the client
 sends back, which would be a way to graft an email onto someone else's account. It only ever fills a
@@ -444,12 +451,13 @@ your project needs to.
 
 ### Identifier collision at the completeness gate
 
-**What happens.** A customer with an incomplete profile supplies an email (or phone) that already
-belongs to a *different* Shopify customer record. Shopify enforces uniqueness on both, so
-`customerUpdate` is rejected and `customer-update.ts` throws `ConflictError` —
-`customer_email_taken` / `customer_phone_taken`, the same codes `customer-create.ts` already uses, so
-existing error copy works unchanged. The signup claim is released, so they can retry with a different
-value. What they cannot do is get into the account they were trying to complete.
+**What happens.** A customer with no usable email supplies one that already belongs to a *different*
+Shopify customer record. Shopify enforces email uniqueness, so `customerUpdate` is rejected and
+`customer-update.ts` throws `ConflictError` — `customer_email_taken`, the same code
+`customer-create.ts` already uses, so existing error copy works unchanged. The signup claim is
+released, so they can retry with a different address. What they cannot do is get into the account they
+were trying to complete. (`customer_phone_taken` exists for the same reason but is far rarer, since
+phone is optional — a customer who hits it can simply omit it.)
 
 **Why it isn't solved.** Almost always the real situation is that one human owns two customer records
 — one from a phone-only guest checkout, one from an email signup years earlier. Reconciling those is an

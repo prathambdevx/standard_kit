@@ -14,35 +14,38 @@ type Deps = {
 };
 
 /**
- * The invariant this kit enforces: every customer has BOTH a usable email and a
- * phone. Shopify does not require either (a customer record with both null is
- * accepted by customerCreate, verified live) — so this auth layer is the only
+ * The invariant this kit enforces: every customer has a usable EMAIL. Phone is
+ * optional — it's an OTP login identifier when present, but email is the channel
+ * that actually has to work (order confirmations, receipts, marketing), so it's
+ * the one worth blocking on. Shopify requires neither (a customer with both null
+ * is accepted by customerCreate, verified live), so this auth layer is the only
  * place the rule can live.
  *
- * `incomplete` is a customer Shopify already knows, missing one of the two. They
- * are NOT logged in; they go through the details form to supply what's missing,
- * which patches their EXISTING Shopify record (customerUpdate) so their orders
- * and addresses stay attached. That one gate replaces a synthetic-placeholder
- * scheme plus an orders/paid healing webhook.
+ * `incomplete` is a customer Shopify already knows who has no usable email. They
+ * are NOT logged in; they go through the details form to supply one, which
+ * patches their EXISTING Shopify record (customerUpdate) so their orders and
+ * addresses stay attached. That one gate replaces a synthetic-placeholder scheme
+ * plus an orders/paid healing webhook. Only the phone channel can produce it —
+ * an email-channel login has, by definition, just proven a usable address.
  */
 export type IdentityLookup =
   | { status: 'ready'; customer: Customer }
   | { status: 'incomplete'; admin: AdminCustomer }
   | { status: 'new' };
 
-/** Email counterpart of findOrLazyFillByPhone, for the email OTP channel. The address
- *  is proven by the OTP, so `incomplete` here means no phone on file. */
+/** Email counterpart of findOrLazyFillByPhone, for the email OTP channel. Never returns
+ *  `incomplete`: the OTP just proved a usable address, which is the only thing the gate
+ *  requires. A missing phone is fine — it lazily fills from Shopify if one is on file. */
 export async function findOrLazyFillByEmail(
   email: string,
   deps: Deps = {},
 ): Promise<IdentityLookup> {
   const cached = await prisma().customer.findUnique({ where: { email } });
-  if (cached?.phone) return { status: 'ready', customer: cached };
+  if (cached) return { status: 'ready', customer: cached };
 
   const adminFindByEmail = deps.adminFindByEmail ?? findCustomerByEmail;
   const admin = await adminFindByEmail(email);
   if (!admin) return { status: 'new' };
-  if (!admin.phone) return { status: 'incomplete', admin };
 
   // Key on Shopify's canonical address, not the string the client typed —
   // Shopify's search is case-insensitive but Postgres VarChar equality is not,
