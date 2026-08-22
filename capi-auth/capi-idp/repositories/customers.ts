@@ -7,6 +7,7 @@ import {
 } from '../services/shopify/admin/customer-lookup';
 import {
   isSyntheticEmail,
+  isWellFormedEmail,
   setShopifyCustomerEmail,
   syntheticEmailForPhone,
 } from '../services/shopify/admin/synthetic-email';
@@ -93,24 +94,28 @@ export type EmailReconcileResult =
  * could never log in by email. orders/paid is the one place that reliably has both
  * the customer and a real address.
  *
- * Deliberately narrow: only ever overwrites an address `isSyntheticEmail()`
- * recognises. A guest checkout, a gift order, or someone using a work address must
- * never clobber a good account email.
+ * Overwrites the stored address when it's either the synthetic placeholder or
+ * genuinely malformed (fails the same validation Shopify's own writes reject
+ * against) — never a well-formed one. A guest checkout, a gift order, or someone
+ * using a work address must never clobber a good account email; but a malformed
+ * address was never a legitimate destination for anyone, so there's nothing to
+ * protect by leaving it. This should only ever run against the account's own
+ * order (skip guest checkouts before calling this), so `real` is the account
+ * holder's own typed contact, not a stranger's.
  */
 export async function reconcileRealEmail(
   input: { shopifyCustomerGid: string; realEmail: string | null | undefined },
   deps: { setShopifyEmail?: (customerId: string, email: string) => Promise<void> } = {},
 ): Promise<EmailReconcileResult> {
   const real = input.realEmail?.trim().toLowerCase();
-  // A synthetic address on the ORDER is not a real one — that's the placeholder
-  // coming back at us, which would be a no-op write and a misleading log line.
-  if (!real?.includes('@') || isSyntheticEmail(real)) return 'not_a_real_email';
+  // A synthetic or malformed address on the ORDER isn't usable as the replacement either.
+  if (!real || isSyntheticEmail(real) || !isWellFormedEmail(real)) return 'not_a_real_email';
 
   const row = await prisma().customer.findUnique({
     where: { shopifyId: input.shopifyCustomerGid },
   });
   if (!row) return 'no_local_row';
-  if (!isSyntheticEmail(row.email)) return 'already_real';
+  if (!isSyntheticEmail(row.email) && isWellFormedEmail(row.email)) return 'already_real';
 
   // Shopify first: if it rejects the address as a duplicate, our row must keep the
   // synthetic value so the two stay consistent. The reverse order would leave

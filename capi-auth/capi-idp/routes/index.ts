@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import {
   capiCallbackHandler,
+  capiCheckoutGrantHandler,
   capiClaimSessionHandler,
   capiLogoutHandler,
   startCapiAuthorizeHandler,
@@ -19,6 +20,7 @@ import {
   submitOtpDetailsHandler,
   verifyOtpHandler,
 } from './otp_handlers';
+import { requireCustomer } from '../middleware/customer';
 
 // In-house phone/email OTP + a custom OIDC IdP, all mounted under one router.
 // otp/* is your own customer-facing API; idp/* is the OIDC wire protocol
@@ -42,5 +44,8 @@ authRouter.get('/capi/start', startCapiAuthorizeHandler);
 authRouter.get('/capi/callback', capiCallbackHandler);
 authRouter.post('/capi/claim', capiClaimSessionHandler);
 authRouter.post('/capi/logout', capiLogoutHandler);
+// Mobile-app-only warm-up before opening a checkout webview — see
+// capi_handlers.ts's comment above capiCheckoutGrantHandler.
+authRouter.post('/capi/checkout-grant', requireCustomer, capiCheckoutGrantHandler);
 
 export default authRouter;

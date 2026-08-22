@@ -4,15 +4,20 @@ export const otpChannelSchema = z.enum(['mobile', 'email']);
 
 // Hard-reject malformed phone numbers at the schema level (SMS-pumping fraud
 // protection) — only applies to the mobile channel; email usernames pass
-// through. The +91-and-10-digits shape below is India-specific (this kit's
-// origin project) — swap in your own country's phone format.
+// through. The +91-and-[6-9]-then-9-digits shape below is India-specific
+// (this kit's origin project) — swap in your own country's phone format, but
+// keep it a real numbering-plan check, not just a digit count: a looser
+// \d{10} let a structurally-valid-but-fake number (e.g. +910000000000) reach
+// Shopify's customerCreate, which rejects it as "Phone is invalid" — a
+// ValidationError that strands the customer on a retry that fails identically
+// every time, if it's not caught here first.
 export const otpSendSchema = z
   .object({
     username: z.string().min(1),
     channel: otpChannelSchema,
   })
-  .refine((v) => v.channel !== 'mobile' || /^\+91\d{10}$/.test(v.username), {
-    message: 'Mobile OTP requires a +91 number with 10 digits',
+  .refine((v) => v.channel !== 'mobile' || /^\+91[6-9]\d{9}$/.test(v.username), {
+    message: 'Please enter a valid phone number',
     path: ['username'],
   })
   .refine((v) => v.channel !== 'email' || z.string().email().safeParse(v.username).success, {
@@ -61,9 +66,11 @@ export const otpDetailsSchema = z.object({
   // Document this as an accepted tradeoff if you keep this shape: whoever's
   // number lands here can later log in via their own phone OTP, same as the
   // (already-accepted) symmetric case on `email` above.
+  // Same [6-9] numbering-plan check as otpSendSchema's refine above — see that
+  // comment for why a looser \d{10} isn't enough.
   phone: z
     .string()
-    .regex(/^\+91\d{10}$/, 'Enter a valid +91 number')
+    .regex(/^\+91[6-9]\d{9}$/, 'Please enter a valid phone number')
     .optional(),
   // Maps onto Shopify's own consent input directly (see
   // shopify-admin/customer-create.ts) — adjust to whatever consent

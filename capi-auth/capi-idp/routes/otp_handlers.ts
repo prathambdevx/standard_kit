@@ -14,6 +14,7 @@ import { log, NotFoundError, TooManyRequestsError, ValidationError } from '@devx
 import type { Context } from 'hono';
 import { deleteCookie, getCookie } from 'hono/cookie';
 import { env } from '../../config/env';
+import { checkEmailDomain } from '../email-domain';
 import { parseBody } from '../../lib/parse-body';
 import { ok } from '../../lib/response';
 import { createCustomerFromSignup } from '../../repositories/customer_signup';
@@ -155,6 +156,13 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
   if (!email) {
     throw new ValidationError('An e-mail address is required to finish signup', {
       code: 'otp_details_email_missing',
+    });
+  }
+  // Only 'undeliverable' (confirmed no MX records) rejects — a slow/unreachable
+  // resolver must never block a real signup over a DNS hiccup.
+  if ((await checkEmailDomain(email)) === 'undeliverable') {
+    throw new ValidationError('Email OTP requires a valid email address', {
+      code: 'invalid_payload',
     });
   }
   // Claim the challenge BEFORE calling Shopify, not after: a claim placed at

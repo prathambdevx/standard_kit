@@ -1,7 +1,12 @@
 // Creates a brand-new Shopify customer for a phone/email-verified signup with
 // no existing Shopify record at all. This is the one canonical caller of the
 // customerCreate mutation in this codebase.
-import { ConflictError, shopifyAdminGraphQL, UpstreamError } from '@devxcommerce/bff-core';
+import {
+  assertNoShopifyUserErrors,
+  ConflictError,
+  shopifyAdminGraphQL,
+  UpstreamError,
+} from '@devxcommerce/bff-core';
 
 export type NewShopifyCustomer = { id: string; email: string | null };
 
@@ -99,16 +104,13 @@ async function defaultAdminCreate(input: CustomerCreateInput): Promise<NewShopif
   const errors = data.customerCreate.userErrors;
   if (errors.length > 0) {
     // A single, unambiguous "already taken" error gets its own error so the
-    // signup form can point at the actual field instead of a generic 502 —
+    // signup form can point at the actual field instead of a generic 400 —
     // anything else (multiple errors, a field-less one, or a single error that
-    // ISN'T a duplicate — e.g. "Email is invalid") falls through to the
-    // generic upstream failure below rather than guessing. UserError (the type
-    // customerCreate actually returns) has no `code`, so message text is the
-    // only signal that distinguishes "already taken" from every other single-
-    // field validation error Shopify can return on the same field — checking
-    // `field` alone here previously misreported a plain validation failure
-    // (e.g. a malformed email) as "an account with this email already
-    // exists", pointing the customer at logging in instead of fixing their input.
+    // ISN'T a duplicate — e.g. "Phone is invalid") falls through to
+    // assertNoShopifyUserErrors below. UserError (the type customerCreate
+    // actually returns) has no `code`, so message text is the only signal
+    // that distinguishes "already taken" from every other single-field
+    // validation error Shopify can return on the same field.
     if (errors.length === 1 && /already been taken/i.test(errors[0]?.message ?? '')) {
       const field = errors[0]?.field;
       if (field?.includes('email')) {
@@ -122,9 +124,10 @@ async function defaultAdminCreate(input: CustomerCreateInput): Promise<NewShopif
         });
       }
     }
-    throw new UpstreamError(errors.map((e) => e.message).join('; '), {
-      code: 'customer_create_failed',
-    });
+    // Every other userErrors case is client-input Shopify rejected, not a
+    // dependency failure — a 400 the customer can act on, not a 502 that
+    // retries identically forever and pages on-call for a typo.
+    assertNoShopifyUserErrors('customerCreate', errors);
   }
   const customer = data.customerCreate.customer;
   if (!customer) {

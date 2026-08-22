@@ -36,7 +36,7 @@ import { env } from '../../config/env';
 import { parseBody } from '../../lib/parse-body';
 import { parseQuery } from '../../lib/parse-query';
 import { ok } from '../../lib/response';
-import { capiAuthCacheKey } from '../../middleware/customer';
+import { capiAuthCacheKey, type Customer } from '../../middleware/customer';
 import { getCapiCustomer } from '../../services/capi/customer';
 import { issueCapiSession } from '../../services/capi/session';
 import {
@@ -48,6 +48,7 @@ import {
 import {
   peekSilentGrant,
   putPending,
+  putSilentGrant,
   takePending,
   takeSilentGrant,
 } from '../../services/idp/session_store';
@@ -447,4 +448,39 @@ export async function capiClaimSessionHandler(c: Context): Promise<Response> {
     });
   }
   return ok(c, { sessionId: claimed.sessionId });
+}
+
+// ── Mobile-app checkout warm-up. Everything below is app-only: the web flow
+// never calls this route. The app walks /capi/start → /capi/callback →
+// /capi/claim itself with its own HTTP client for LOGIN — this handler only
+// covers a checkout webview warming up Shopify's own cookie, not login. ──
+
+// Mints a fresh single-use grant for a customer who is ALREADY signed in, so the
+// app can warm Shopify's cookie inside the webview it is about to open checkout
+// in. Gated on a live session, so it hands out nothing the caller could not
+// already do — it only lets them do it in a different cookie jar.
+export async function capiCheckoutGrantHandler(c: Context): Promise<Response> {
+  const customer = c.get('customer') as Customer;
+  const grant = `idp_silent_${randomUUID()}`;
+  await putSilentGrant(grant, {
+    shopifyId: customer.shopifyId,
+    // Same synthetic shape capi/customer.ts falls back to, so a customer with
+    // no real email on file still gets a usable grant.
+    email: customer.email || `${customer.shopifyId.split('/').pop()}@noemail.bsc`,
+  });
+
+  // Assembled here rather than in the app so the caller never has to know the
+  // BFF's own origin, and so the start route's allowlist stays a server-side
+  // concern. Unset would yield a relative startUrl the app cannot open, so
+  // refuse before the grant is minted rather than hand back something unusable.
+  if (!env.CAPI_REDIRECT_URI) {
+    throw new ServiceUnavailableError('The mobile checkout warm-up is not configured', {
+      code: 'capi_checkout_grant_unconfigured',
+    });
+  }
+  const base = new URL(env.CAPI_REDIRECT_URI).origin;
+  return ok(c, {
+    grant,
+    startUrl: `${base}/auth/capi/start?grant=${encodeURIComponent(grant)}`,
+  });
 }

@@ -4,7 +4,10 @@
 // derived in another, and a third independent hardcoded domain string used
 // only to detect one — so any two of them could disagree on the same customer.
 import { shopifyAdminGraphQL, UpstreamError } from '@devxcommerce/bff-core';
+import { z } from 'zod';
 import { env } from '../../../config/env';
+
+const EMAIL_SCHEMA = z.string().email();
 
 function domain(): string {
   if (!env.SYNTHETIC_EMAIL_DOMAIN) {
@@ -30,6 +33,12 @@ export function isSyntheticEmail(email: string | null | undefined): boolean {
   const configured = env.SYNTHETIC_EMAIL_DOMAIN;
   if (!configured || !email) return false;
   return email.toLowerCase().endsWith(`@${configured.toLowerCase()}`);
+}
+
+/** Same validator Shopify's own writes reject against (capi/customer.ts's EMAIL_SCHEMA) — a
+ *  false here means the address was never usable, so there's nothing legitimate to protect. */
+export function isWellFormedEmail(email: string | null | undefined): boolean {
+  return !!email && EMAIL_SCHEMA.safeParse(email).success;
 }
 
 type Deps = { adminUpdate?: (customerId: string, email: string) => Promise<void> };

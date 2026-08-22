@@ -133,7 +133,8 @@ real measured latency numbers if you need to set expectations with a client/PM.
 | `shopify-admin/customer-lookup.ts` | Look up an existing Shopify customer by phone or email via the Admin API — the "does this identity already exist" check for a verified OTP. Only relevant to the custom-IdP path (Shopify's own hosted login handles this itself). |
 | `shopify-admin/customer-create.ts` | Creates a brand-new Shopify customer for a phone/email-verified signup with no existing record. **Read the comment on `CREATE_CUSTOMER_MUTATION` before touching this file** — see "Known gotchas" below. |
 | `shopify-admin/synthetic-email.ts` | Shopify requires every customer to have an email. A phone-only signup gets a synthetic placeholder here until a real address is learned later (e.g. from a checkout). **The domain here is the most project-specific decision in the whole kit — see below.** |
-| `routes/index.ts`, `routes/otp_handlers.ts`, `routes/idp_handlers.ts`, `routes/capi_handlers.ts`, `routes/shared.ts`, `routes/schemas.ts` (see `routes/variables.md`) | The Hono routes: OTP send/verify/resend/details, the IdP endpoints (`/authorize`, `/token`, `/.well-known/*`, JWKS) if using the custom IdP, and the CAPI endpoints (`/capi/start`, `/capi/callback`, `/capi/claim`, `/capi/logout`). |
+| `routes/index.ts`, `routes/otp_handlers.ts`, `routes/idp_handlers.ts`, `routes/capi_handlers.ts`, `routes/shared.ts`, `routes/schemas.ts` (see `routes/variables.md`) | The Hono routes: OTP send/verify/resend/details, the IdP endpoints (`/authorize`, `/token`, `/.well-known/*`, JWKS) if using the custom IdP, and the CAPI endpoints (`/capi/start`, `/capi/callback`, `/capi/claim`, `/capi/logout`, `/capi/checkout-grant` — mobile-app-only, mints a warm-up grant for an already-signed-in customer opening a checkout webview; see "Known gotchas"). |
+| `email-domain.ts` | Live MX lookup for a typed (unverified) signup email — used by `routes/otp_handlers.ts`'s details handler. Fails open on any timeout/resolver error; only a confirmed no-MX-records result rejects. |
 | `middleware/customer.ts` | Route-gating middleware — resolves a `capi_sess_<uuid>` session id from the `Authorization: Bearer` header to a local customer. `requireCustomer` 401s when missing/invalid; `optionalCustomer` + `readOptionalCustomer` resolve the same credential without ever throwing, for a route that serves guests and signed-in shoppers from one handler (wishlist, PDP) — an invalid/expired token degrades to guest rather than 401ing a page that renders fine without auth. If your app also has some other login path issuing a different bearer-credential shape on the same header, branch on a prefix the same way this file's own comment describes — resolve each kind through its own function, cached under its own key prefix. |
 | `repositories/customers.ts`, `customer_signup.ts` | Postgres upsert logic for the local `Customer` row, keyed by `shopifyId`, lazily backfilled from Shopify on a cache miss. |
 | `repositories/idp_interactions.ts`, `idp_auth_codes.ts` | Redis-backed short-lived OIDC handshake state (custom-IdP path only). |
@@ -288,8 +289,14 @@ Everything above, plus:
   `"Email is invalid"`). Checking only `field` reports a malformed address as "an account with
   this email already exists" — wrong status, and it sends the customer to log in instead of
   fixing what they typed. Require the message to actually match `/already been taken/i` before
-  treating a single error as a conflict; anything else (including other single-field errors)
-  should fall through to the generic upstream failure.
+  treating a single error as a conflict.
+- **Every other `userErrors` case is a 400, not a 502.** A single non-"already taken" error (a
+  malformed phone, an invalid email) is still client input Shopify rejected — not a dependency
+  failure. Throwing a generic `UpstreamError` (502) there makes the client retry identically
+  forever and pages on-call for what's really a typo. `customer-create.ts` routes this through
+  `@devxcommerce/bff-core`'s `assertNoShopifyUserErrors`, which maps it to a `ValidationError`
+  (400) instead — use the same helper (or your own equivalent mapping) rather than a blanket
+  `UpstreamError` for anything that isn't the duplicate case above.
 - **A server-side session revoke needs explicit handling at *every* call site that uses a
   resolved CAPI access token.** If a customer signs out directly on Shopify's own
   checkout/account domain, Shopify revokes that session server-side immediately — but your own
@@ -324,6 +331,33 @@ Everything above, plus:
   typed, and Shopify's own `customerCreate` uniqueness constraint is what catches a duplicate
   (atomically, avoiding a check-then-create race). This is a deliberate tradeoff, not an
   oversight — document it as an accepted risk in your own security notes if you keep this shape.
+- **A hand-rolled email regex is not the same check Shopify's writes make.** `capi/customer.ts`
+  and `capi-idp/routes/schemas.ts`'s email refine both need the SAME shape check `customerCreate`
+  itself enforces, or you get a customer whose account looks fine to your code but whose email
+  Shopify later rejects on a write (e.g. `cartBuyerIdentityUpdateByEmail` at checkout, if you
+  build that flow) — silently, since that call is usually best-effort/degraded rather than
+  user-facing. Use `z.string().email()` (or equivalent), not a loose `/^[^\s@]+@[^\s@]+\.[^\s@]+$/`
+  — the loose version passes shapes (trailing/double dot, underscore or leading hyphen in the
+  domain) that Shopify's own validator rejects.
+- **Even a stricter shape check doesn't catch everything Shopify's live checks reject.**
+  Confirmed empirically: some of Shopify's own mutations (`cartBuyerIdentityUpdate` specifically,
+  if you build a cart/checkout integration) do live domain-deliverability checking — rejecting a
+  syntactically valid address (an unusual TLD, a subdomain) that both a hand-rolled regex AND
+  Zod's `.email()` accept. No static validation can pre-empt that; if you need to catch it
+  earlier (e.g. at your own signup form), add a real MX lookup (`email-domain.ts` in this kit) —
+  and make it fail OPEN on any timeout/resolver error, never reject on inconclusive. A cold
+  lookup on a real, legitimate domain can take over a second (measured: over 1000ms uncached),
+  so a timeout there is not evidence the domain is bad.
+- **Mobile app checkout still needs Shopify's cookie planted in the checkout webview's own jar.**
+  A native app's HTTP client and its checkout webview are separate cookie jars — logging in via
+  your own HTTP-client-driven CAPI flow (this kit's `/capi/start` → `/capi/callback` → `/capi/claim`)
+  never touches the webview's cookies at all. `routes/capi_handlers.ts`'s
+  `capiCheckoutGrantHandler` (`POST /capi/checkout-grant`, gated behind `requireCustomer`) mints a
+  fresh single-use grant for an already-signed-in customer, which the app then opens
+  `/capi/start?grant=...` with INSIDE the checkout webview — that redirect chain plants Shopify's
+  own session cookie in that specific jar before checkout loads, so `?sso=silent` on the checkout
+  URL actually finds something. Skipping this step means the customer reaches checkout looking
+  logged out, even though the app itself still has a perfectly live session.
 
 ## What to decide for your own project
 
