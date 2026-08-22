@@ -19,7 +19,7 @@
 // Checking it at the CLAIM step alone covers both attacks: a relayed silent
 // grant still has to finish the Shopify round trip and land on web's callback,
 // where the victim's sessionStorage holds no matching secret.
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   AppError,
   log,
@@ -37,6 +37,7 @@ import { parseBody } from '../../lib/parse-body';
 import { parseQuery } from '../../lib/parse-query';
 import { ok } from '../../lib/response';
 import { capiAuthCacheKey, type Customer } from '../../middleware/customer';
+import { beginCapiHandshake } from '../../services/capi/handshake';
 import { getCapiCustomer } from '../../services/capi/customer';
 import { issueCapiSession } from '../../services/capi/session';
 import {
@@ -47,7 +48,6 @@ import {
 } from '../../services/capi/session_store';
 import {
   peekSilentGrant,
-  putPending,
   putSilentGrant,
   takePending,
   takeSilentGrant,
@@ -165,31 +165,20 @@ export async function startCapiAuthorizeHandler(c: Context): Promise<Response> {
     });
   }
 
-  const codeVerifier = randomBytes(32).toString('base64url');
-  const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
-  const state = randomUUID();
   // Single-use, 10-minute TTL (idp/session_store.ts's own PENDING_TTL_SECONDS)
-  // — plenty for one redirect round-trip through Shopify's login.
-  // Carry the browser binding from the grant through the Shopify round trip so
-  // the claim step can verify it — that is the single gate covering both the
-  // relayed-grant and relayed-claim-token attacks.
-  await putPending(state, {
-    codeVerifier,
-    redirectUri: CAPI_REDIRECT_URI as string,
-    bindHash: grantBindHash,
-    grantToken: grant,
-    returnTo,
-  });
-
-  const url = new URL(CAPI_AUTHORIZE_ENDPOINT as string);
-  url.searchParams.set('response_type', 'code');
-  url.searchParams.set('client_id', CAPI_CLIENT_ID as string);
-  url.searchParams.set('redirect_uri', CAPI_REDIRECT_URI as string);
-  url.searchParams.set('scope', CAPI_SCOPE as string);
-  url.searchParams.set('state', state);
-  url.searchParams.set('code_challenge', codeChallenge);
-  url.searchParams.set('code_challenge_method', 'S256');
-  return c.redirect(url.toString(), 302);
+  // — plenty for one redirect round-trip through Shopify's login. Carrying the
+  // browser binding from the grant through the Shopify round trip is the single
+  // gate covering both the relayed-grant and relayed-claim-token attacks.
+  const { authorizeUrl } = await beginCapiHandshake(
+    {
+      authorizeEndpoint: CAPI_AUTHORIZE_ENDPOINT as string,
+      redirectUri: CAPI_REDIRECT_URI as string,
+      scope: CAPI_SCOPE as string,
+      clientId: CAPI_CLIENT_ID as string,
+    },
+    { bindHash: grantBindHash, grantToken: grant, returnTo },
+  );
+  return c.redirect(authorizeUrl, 302);
 }
 
 // capi/callback is a TOP-LEVEL navigation, so anything thrown here renders raw
