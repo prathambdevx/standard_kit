@@ -353,11 +353,18 @@ Everything above, plus:
   your own HTTP-client-driven CAPI flow (this kit's `/capi/start` → `/capi/callback` → `/capi/claim`)
   never touches the webview's cookies at all. `routes/capi_handlers.ts`'s
   `capiCheckoutGrantHandler` (`POST /capi/checkout-grant`, gated behind `requireCustomer`) mints a
-  fresh single-use grant for an already-signed-in customer, which the app then opens
-  `/capi/start?grant=...` with INSIDE the checkout webview — that redirect chain plants Shopify's
-  own session cookie in that specific jar before checkout loads, so `?sso=silent` on the checkout
-  URL actually finds something. Skipping this step means the customer reaches checkout looking
-  logged out, even though the app itself still has a perfectly live session.
+  fresh single-use grant for an already-signed-in customer; the app then opens
+  `/capi/start?grant=...&return_to=<checkout URL>` INSIDE the checkout webview. `return_to` must
+  be the actual checkout URL you want the webview to land on — it's validated against an exact
+  host allowlist (`isAllowedReturnTo`, currently `SHOPIFY_STORE_DOMAIN` only; add your own custom
+  checkout domain if you use one) and silently dropped (not refused) if it fails that check, so a
+  bad value degrades to the normal post-login landing page rather than blocking the flow. On
+  callback, this path never issues a session (none is needed for a warm-up) — it either redirects
+  straight to `return_to` once identity is confirmed, or refuses with `capi_warmup_session_reused`
+  if Shopify short-circuited to a reused session it can't verify belongs to this customer. Forgetting
+  `return_to` (minting the grant but never passing it through `/capi/start`) means the redirect
+  chain still plants the cookie, but the browser ends up on your normal login-landing page instead
+  of checkout — the cookie is there, but the customer isn't where they expected to be.
 
 ## What to decide for your own project
 
