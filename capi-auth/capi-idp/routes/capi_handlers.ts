@@ -114,10 +114,13 @@ function returnToHostForLog(candidate: string): string {
 // Starts the CAPI handshake, redirecting to Shopify's authorize endpoint.
 export async function startCapiAuthorizeHandler(c: Context): Promise<Response> {
   const { grant, return_to: returnToRaw } = parseQuery(c, capiStartQuerySchema);
+  // Only meaningful paired with a grant — capiCheckoutGrantHandler's startUrl is
+  // the only caller that ever sets both. A stray return_to on an ordinary login
+  // call is dropped, same as one that fails the host check below.
   // Dropped rather than refused when it fails the check: the handshake itself is
   // still valid, so the customer completes login and lands on the default page
   // instead of being blocked by a bad parameter.
-  const returnTo = returnToRaw && isAllowedReturnTo(returnToRaw) ? returnToRaw : undefined;
+  const returnTo = grant && returnToRaw && isAllowedReturnTo(returnToRaw) ? returnToRaw : undefined;
   if (returnToRaw && !returnTo) {
     log.warn(
       { returnToHost: returnToHostForLog(returnToRaw) },
@@ -290,7 +293,11 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
   // path: a short-circuited /authorize means the cookie now in this jar belongs
   // to whoever Shopify already had, which may not be your customer. Without the
   // exchange there is no way to check who that is, so this fails closed.
-  if (pending.returnTo) {
+  //
+  // Also requires grantToken: this is the warm-up path's own marker (only
+  // capiCheckoutGrantHandler's startUrl sets both together), so a stray
+  // return_to on an ordinary login call can't skip session issuance.
+  if (pending.returnTo && pending.grantToken) {
     if (expectedShopifyId) {
       log.warn(
         { state: q.state },
