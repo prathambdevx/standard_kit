@@ -92,12 +92,13 @@ choice in the whole kit), a `hasRealEmail` flag that had to be threaded through 
 Legacy phone-only customers self-heal with no batch job: the first time one logs in, the gate collects
 their email. Ones who never come back never needed an email anyway.
 
-### One known gap
+### Collisions: measured, and rare enough to ignore
 
-If the customer supplies an identifier that already belongs to a *different* Shopify customer, they
-can't complete the gate — they get an actionable error and can retry with another value, but the
-underlying "you have two accounts" situation is **not** solved here. This is the one place the rule is
-harsher than what it replaced. Tracked in [Open items](#open-items--known-gaps-deliberately-unsolved).
+If the customer supplies an email that already belongs to a *different* Shopify customer, they get an
+actionable error and retry with another address. This kit does **not** try to merge the two accounts —
+and the numbers say it shouldn't. Full data in
+[Open items](#open-items--known-gaps-deliberately-unsolved); short version: the harmful outcome is a
+fraction of a percent, and it is not what a merge flow would fix.
 
 ## Prerequisites
 
@@ -449,34 +450,46 @@ Everything above, plus:
 Not bugs, and not oversights — things this kit knowingly does not handle, so you can decide whether
 your project needs to.
 
-### Identifier collision at the completeness gate
+### Identifier collisions — measured, and not worth solving
 
-**What happens.** A customer with no usable email supplies one that already belongs to a *different*
-Shopify customer record. Shopify enforces email uniqueness, so `customerUpdate` is rejected and
-`customer-update.ts` throws `ConflictError` — `customer_email_taken`, the same code
-`customer-create.ts` already uses, so existing error copy works unchanged. The signup claim is
-released, so they can retry with a different address. What they cannot do is get into the account they
-were trying to complete. (`customer_phone_taken` exists for the same reason but is far rarer, since
-phone is optional — a customer who hits it can simply omit it.)
+Numbers below are a real `bulkOperationRunQuery` audit over every customer in the production store this
+kit was extracted from (612,884 customers, 2026-08). Aggregates only — no per-customer data.
 
-**Why it isn't solved.** Almost always the real situation is that one human owns two customer records
-— one from a phone-only guest checkout, one from an email signup years earlier. Reconciling those is an
-account merge, and a merge is a product decision this kit has no business making for you: which record
-survives, what happens to the orders/addresses/wishlist on the losing one, whether a customer can
-trigger it themselves at all. Guessing would be worse than refusing.
+| Segment | Count | % of base |
+|---|---|---|
+| Real email on file | 611,794 | 99.82% |
+| **No email at all** (what the gate collects from) | **1,080** | **0.18%** |
+| Phone on file | 379,443 | 61.9% |
+| **No phone at all** | **233,441** | **38.1%** |
+| Phones shared by 2+ customer records | 13 pairs (26 customers) | 0.004% |
+| **Emails shared by 2+ customer records** | **0** | **0%** |
 
-**How rare.** Bounded by the size of your incomplete-profile segment — in the store this kit came from
-that was 1,080 of 612,884 customers (0.18%), and only the subset of those who *also* own a second
-record with the address they type is affected. Related datapoint from the same audit: **zero** emails
-were shared across two customer records out of 612,884 — which is precisely *why* the write gets
-rejected rather than silently merging.
+**Zero shared emails out of 612,884.** Shopify blocks duplicate emails outright, which is exactly why a
+colliding `customerUpdate` is *rejected* rather than silently merging — the platform is already doing
+the integrity work. There is no corrupt-data scenario to defend against here.
 
-**If you do want to close it**, the shape that doesn't compromise security: detect the conflict, then
-make the customer prove they own the colliding account (send an OTP to *that* identifier) before doing
-anything. Only after that proof do you have the standing to offer either a merge or "sign in with that
-account instead." Never merge on an unproven typed string — that is an account-takeover primitive.
+**So who actually hits a collision?** Not the 0.18% the gate touches — that's the small side. The larger
+exposure is the mirror case: a customer with an email but **no phone** (38.1%) who tries phone-OTP
+login. The phone lookup finds nothing (Shopify has never seen that number), so they're routed to signup,
+and then they type an email. Three outcomes:
 
-**Before this rule existed** the same conflict occurred in the background healing path
-(`reconcileRealEmail`, now deleted): it returned `'conflict'`, logged it, and moved on. Nobody was
-blocked, and nobody's data was fixed either. Trading a silent no-op for a loud, actionable stop is the
-intended change — just know it's a change.
+| What they do | Outcome | Severity |
+|---|---|---|
+| Log in by **email** instead | Works normally — proven address, phone optional | **none** |
+| Phone login, types their **existing** email | Blocked with `customer_email_taken` | friction only, data safe |
+| Phone login, types a **new** email | Second account created, history stays on the first | the only real harm |
+
+The harm case is `38.1% × (chose phone login) × (typed a different address than the one on their
+account)` — two multiplicative filters, both well under 1. **In practice a fraction of a percent, and a
+merge flow would not address it anyway**, because nothing errors: the customer simply created a new
+account. That is why this kit ships no merge logic and no collision recovery beyond a clear error.
+
+**The cheap mitigation, if you want one**, is UI-level and needs no new backend: when signup returns
+`customer_email_taken`, don't just render the message — offer a one-tap switch to email OTP with that
+address prefilled. Same information, but it finishes the journey. For the silent-duplicate row, the only
+lever is the form itself: ask *"already shopped with us? sign in with your email"* **before** they type
+a fresh address, not after.
+
+**What changed vs. the deleted scheme.** `reconcileRealEmail` hit the same conflict in the background,
+returned `'conflict'`, logged it, and moved on — nobody blocked, nobody's data fixed. Trading that
+silent no-op for a loud, actionable stop is the intended change; just know it is a change.
