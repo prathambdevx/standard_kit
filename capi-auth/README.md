@@ -34,6 +34,67 @@ regardless of which Shopify integration path you pick, or with no Shopify at all
 | **`otp-engine/`** | Generate, hash, store, rate-limit, and verify a 6-digit OTP over SMS/email. Delivery is pluggable — write your own vendor integration, or leave it mocked outside production. | No — usable standalone for any phone/email login. |
 | **`capi-idp/`** | Turns your BFF into a real OIDC identity provider (`/authorize`, `/token`, `/.well-known/openid-configuration`, JWKS) that Shopify's Customer Account API can register as a *custom* login provider, plus the client-side half that exchanges Shopify's own CAPI grant for a session. | Yes, in practice, if you want the full custom-IdP flow — it expects a verified-OTP identity to hand off. The OIDC/OAuth mechanics themselves don't care how you verified the customer, though. |
 
+## The one rule: every customer has an email AND a phone
+
+This kit enforces a single invariant at login, and a lot of complexity disappears because of it.
+
+**Shopify does not require either identifier.** Verified live against the Admin API — `customerCreate`
+accepts a customer with no email, with no phone, and with *neither*:
+
+| Input | Result |
+|---|---|
+| phone only, no email | accepted, `email: null` |
+| phone + explicit `email: null` | accepted, `email: null` |
+| neither phone nor email | accepted, both null |
+
+Checkout doesn't force it either: Shopify's checkout wants *a* contact method, and if the store's
+customer-contact setting permits phone, a customer completes checkout and gets SMS confirmations with
+no email ever recorded. That's how a real store ends up with phone-only customers who nonetheless have
+full order histories. **So "every customer has both" is your product rule, not a platform constraint —
+and this auth layer is the only place it can be enforced.**
+
+### How the gate works
+
+`repositories/customers.ts`'s `findOrLazyFillByPhone`/`ByEmail` return an `IdentityLookup`:
+
+| Status | Meaning | What happens |
+|---|---|---|
+| `ready` | complete profile | logged in normally |
+| `incomplete` | Shopify knows them, but one identifier is missing or unusable | **not** logged in — `details_required`, prefilled with the name Shopify already holds |
+| `new` | Shopify has never seen this identity | `details_required`, a genuine signup |
+
+For `incomplete`, `submitOtpDetailsHandler` **patches their existing record** (`customerUpdate` via
+`shopify-admin/customer-update.ts`), so **their orders and addresses stay attached**. It decides
+create-vs-patch by re-resolving the identity against Shopify itself — never from a flag the client
+sends back, which would be a way to graft an email onto someone else's account. It only ever fills a
+*blank* field: the OTP proved one identifier, the other is merely typed, so a typed string never
+overwrites a real value Shopify already holds. Marketing consent is not applied on the patch path
+either — an existing customer supplying a missing field is not newly consenting.
+
+Calling `customerCreate` for this case instead is the bug to avoid: Shopify enforces phone uniqueness,
+so it fails outright with "Phone has already been taken" — and if it *did* succeed you'd have a
+duplicate customer showing none of their history.
+
+### What this replaces
+
+A synthetic-placeholder scheme (`<phone>@your-domain`) plus an `orders/paid` webhook to heal it later.
+Both are gone, and with them: the synthetic-domain decision (previously the most project-specific
+choice in the whole kit), a `hasRealEmail` flag that had to be threaded through every downstream caller
+(carts, checkout, order writes), and the webhook wiring a consumer needed just to fix email data.
+
+Legacy phone-only customers self-heal with no batch job: the first time one logs in, the gate collects
+their email. Ones who never come back never needed an email anyway.
+
+### The edge case you must decide on
+
+The customer supplies an email (or phone) that **already belongs to another Shopify customer**.
+`customer-update.ts` throws `ConflictError` with `customer_email_taken` / `customer_phone_taken` — the
+same codes `customer-create.ts` uses, so existing error copy works unchanged — and the signup claim is
+released so they can retry with a different value. That's a deliberate default, not the only option: a
+real account-merge flow is out of scope for this kit. Be aware that this turns what used to be a
+silently-logged background conflict into something that **blocks that customer's login** until they
+enter a different address, which is the one place this rule is harsher than what it replaced.
+
 ## Prerequisites
 
 Both pieces assume:
@@ -94,8 +155,8 @@ Both pieces assume:
    "Known gotchas". Race the revoke call against a short timeout so a slow or failed revoke still
    lets the customer finish clearing their local state.
 8. **Adapt the project-specific bits** — see "What to decide for your own project" below. Don't
-   skip this; a couple of pieces (synthetic email domain, marketing-consent field mapping, phone
-   format) need real decisions for your own brand/store, not just a copy-paste.
+   skip this; a couple of pieces (marketing-consent field mapping, phone format) need real
+   decisions for your own brand/store, not just a copy-paste.
 
 ## `otp-engine/` — files and env vars
 
@@ -133,9 +194,9 @@ real measured latency numbers if you need to set expectations with a client/PM.
 | `capi/customer.ts` | Fetches the CAPI-authenticated customer's identity from Shopify's Customer Account API. |
 | `shopify-admin/customer-lookup.ts` | Look up an existing Shopify customer by phone or email via the Admin API — the "does this identity already exist" check for a verified OTP. Only relevant to the custom-IdP path (Shopify's own hosted login handles this itself). |
 | `shopify-admin/customer-create.ts` | Creates a brand-new Shopify customer for a phone/email-verified signup with no existing record. **Read the comment on `CREATE_CUSTOMER_MUTATION` before touching this file** — see "Known gotchas" below. |
-| `shopify-admin/synthetic-email.ts` | Shopify requires every customer to have an email. A phone-only signup gets a synthetic placeholder here until a real address is learned later (e.g. from a checkout). **The domain here is the most project-specific decision in the whole kit — see below.** |
+| `shopify-admin/customer-update.ts` | Patches an EXISTING Shopify customer (`customerUpdate`) to fill in a missing email/phone — the other half of `customer-create.ts`. Keeps their customer id, so orders and addresses stay attached. Maps "already been taken" to a `ConflictError` the signup form can act on, same as create. |
 | `routes/index.ts`, `routes/otp_handlers.ts`, `routes/idp_handlers.ts`, `routes/capi_handlers.ts`, `routes/shared.ts`, `routes/schemas.ts` (see `routes/variables.md`) | The Hono routes: OTP send/verify/resend/details, the IdP endpoints (`/authorize`, `/token`, `/.well-known/*`, JWKS) if using the custom IdP, and the CAPI endpoints (`/capi/start`, `/capi/callback`, `/capi/claim`, `/capi/logout`, `/capi/checkout-grant` — mobile-app-only, mints a warm-up grant for an already-signed-in customer opening a checkout webview; see "Known gotchas"). |
-| `email-domain.ts` | Live MX lookup for a typed (unverified) signup email — used by `routes/otp_handlers.ts`'s details handler. Fails open on any timeout/resolver error; only a confirmed no-MX-records result rejects. |
+| `email-domain.ts` | The one email-validation module: `isWellFormedEmail()` (shape, via `z.string().email()`) and `checkEmailDomain()` (live MX lookup). Used by the details handler and by the login gate. The MX check fails open on any timeout/resolver error — only a confirmed no-MX-records result rejects. |
 | `middleware/customer.ts` | Route-gating middleware — resolves a `capi_sess_<uuid>` session id from the `Authorization: Bearer` header to a local customer. `requireCustomer` 401s when missing/invalid; `optionalCustomer` + `readOptionalCustomer` resolve the same credential without ever throwing, for a route that serves guests and signed-in shoppers from one handler (wishlist, PDP) — an invalid/expired token degrades to guest rather than 401ing a page that renders fine without auth. If your app also has some other login path issuing a different bearer-credential shape on the same header, branch on a prefix the same way this file's own comment describes — resolve each kind through its own function, cached under its own key prefix. |
 | `repositories/customers.ts`, `customer_signup.ts` | Postgres upsert logic for the local `Customer` row, keyed by `shopifyId`, lazily backfilled from Shopify on a cache miss. |
 | `repositories/idp_interactions.ts`, `idp_auth_codes.ts` | Redis-backed short-lived OIDC handshake state (custom-IdP path only). |
@@ -174,9 +235,6 @@ SHOPIFY_ADMIN_API_TOKEN=
 SHOPIFY_STORE_DOMAIN=
 SHOPIFY_API_VERSION=
 
-# Phone-only signups need a synthetic email domain — only relevant if you build your own
-# signup flow (custom-IdP path); see synthetic-email.ts note below
-SYNTHETIC_EMAIL_DOMAIN=
 ```
 
 ## Shopify-side setup
@@ -369,10 +427,6 @@ Everything above, plus:
 
 ## What to decide for your own project
 
-- **`synthetic-email.ts`'s domain and format** — needs a real domain *you* own and control DNS
-  for, not a placeholder. This is a real decision (what happens when a phone-only customer's
-  synthetic address is later seen by an email tool, a support agent, an export) — don't just copy
-  a domain from elsewhere.
 - **Marketing-consent field mapping in `customer-create.ts`** (`acceptEmailMarketing`/
   `acceptSmsMarketing` → Shopify's nested `marketingState` input) — this maps a specific signup
   form's fields; adjust to whatever consent checkboxes your own signup form actually has.
