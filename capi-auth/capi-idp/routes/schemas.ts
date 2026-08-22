@@ -136,7 +136,10 @@ export const capiClaimBodySchema = z.object({
 
 // grant is only present on the silent-CAPI-handoff path (handlers.ts's
 // respondWithSilentCapiHandoff) — absent for any other/future caller of this
-// endpoint, which proceeds unchecked as before.
+// endpoint, which proceeds unchecked as before. return_to is only present on
+// the mobile checkout-warm-up path (capiCheckoutGrantHandler's startUrl) —
+// validated against an allowlist in capi_handlers.ts, never trusted as-is.
 export const capiStartQuerySchema = z.object({
   grant: z.string().optional(),
+  return_to: z.string().optional(),
 });

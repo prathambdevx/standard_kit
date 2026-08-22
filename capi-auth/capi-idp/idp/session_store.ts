@@ -24,6 +24,11 @@ export interface PendingAuth {
   // had rather than the customer who just passed OTP. See the README's
   // session-reuse note.
   grantToken?: string;
+  // Set only for the mobile-app checkout-warm-up flow (capiCheckoutGrantHandler) —
+  // when present, the callback abandons the code instead of issuing a session
+  // and redirects straight here (the actual checkout URL) once identity is
+  // confirmed. See routes/capi_handlers.ts's isAllowedReturnTo.
+  returnTo?: string;
 }
 
 export async function putPending(state: string, data: PendingAuth): Promise<void> {

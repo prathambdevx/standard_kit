@@ -84,9 +84,46 @@ function sameShopifyCustomer(a: string, b: string): boolean {
   return x.length > 0 && x === y;
 }
 
+// Only the hosted-checkout host is a legal return_to — never your own site's
+// allowlist, since this is the one case where the flow is meant to end on
+// Shopify's domain. Exact host match, never a suffix check, so
+// `checkout.yourdomain.com.evil.tld` cannot pass. Add your own custom
+// checkout domain env var here if you use one distinct from SHOPIFY_STORE_DOMAIN.
+function isAllowedReturnTo(candidate: string): boolean {
+  const hosts = [env.SHOPIFY_STORE_DOMAIN]
+    .filter((h): h is string => !!h)
+    .map((h) => h.replace(/^https?:\/\//, '').replace(/\/.*$/, ''));
+  try {
+    const u = new URL(candidate);
+    return u.protocol === 'https:' && hosts.includes(u.host);
+  } catch {
+    return false;
+  }
+}
+
+/** The host of a rejected return_to, for logging — never the whole value, which
+ *  is unvalidated caller input and can carry a token or id in its query. */
+function returnToHostForLog(candidate: string): string {
+  try {
+    return new URL(candidate).host;
+  } catch {
+    return '<unparseable>';
+  }
+}
+
 // Starts the CAPI handshake, redirecting to Shopify's authorize endpoint.
 export async function startCapiAuthorizeHandler(c: Context): Promise<Response> {
-  const { grant } = parseQuery(c, capiStartQuerySchema);
+  const { grant, return_to: returnToRaw } = parseQuery(c, capiStartQuerySchema);
+  // Dropped rather than refused when it fails the check: the handshake itself is
+  // still valid, so the customer completes login and lands on the default page
+  // instead of being blocked by a bad parameter.
+  const returnTo = returnToRaw && isAllowedReturnTo(returnToRaw) ? returnToRaw : undefined;
+  if (returnToRaw && !returnTo) {
+    log.warn(
+      { returnToHost: returnToHostForLog(returnToRaw) },
+      'capi/start ignored a return_to outside the allowed checkout host',
+    );
+  }
   let grantBindHash: string | undefined;
   // grant is only present on the silent-CAPI-handoff path — this request IS
   // the frontend's real top-level navigation to capiHandoffUrl, so a
@@ -141,6 +178,7 @@ export async function startCapiAuthorizeHandler(c: Context): Promise<Response> {
     redirectUri: CAPI_REDIRECT_URI as string,
     bindHash: grantBindHash,
     grantToken: grant,
+    returnTo,
   });
 
   const url = new URL(CAPI_AUTHORIZE_ENDPOINT as string);
@@ -251,6 +289,31 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
         'CAPI callback: Shopify reused an existing customer-account session instead of authenticating via our IdP — verifying the returned identity before issuing a session',
       );
     }
+  }
+
+  // The app's checkout warm-up: this browser already belongs to a signed-in
+  // customer and only came through here so Shopify would set its own cookie in
+  // this cookie jar. There is no session to issue — minting one would leave a
+  // spare 30-day record nobody redeems — so the code is simply abandoned (it
+  // expires on Shopify's side) and the browser goes on to checkout.
+  //
+  // The identity gate still applies, and matters more here than on the normal
+  // path: a short-circuited /authorize means the cookie now in this jar belongs
+  // to whoever Shopify already had, which may not be your customer. Without the
+  // exchange there is no way to check who that is, so this fails closed.
+  if (pending.returnTo) {
+    if (expectedShopifyId) {
+      log.warn(
+        { state: q.state },
+        'CAPI checkout warm-up refused: Shopify reused an existing session, so the identity behind the planted cookie is unproven',
+      );
+      const bounce = redirectToLoginAfterFailedCallback(c, 'session-reused');
+      if (bounce) return bounce;
+      throw new UnauthorizedError('Could not confirm who this checkout session belongs to', {
+        code: 'capi_warmup_session_reused',
+      });
+    }
+    return c.redirect(pending.returnTo, 302);
   }
 
   const { CAPI_TOKEN_ENDPOINT, CAPI_CALLBACK_LANDING_URL } = env;

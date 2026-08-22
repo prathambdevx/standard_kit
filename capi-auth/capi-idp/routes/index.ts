@@ -20,7 +20,7 @@ import {
   submitOtpDetailsHandler,
   verifyOtpHandler,
 } from './otp_handlers';
-import { requireCustomer } from '../middleware/customer';
+import { requireCustomer } from '../../middleware/customer';
 
 // In-house phone/email OTP + a custom OIDC IdP, all mounted under one router.
 // otp/* is your own customer-facing API; idp/* is the OIDC wire protocol
