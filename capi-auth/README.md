@@ -126,10 +126,38 @@ Both pieces assume:
     createdAt DateTime @default(now()) @map("created_at")
     @@map("customers")
   }
+
+  // The CAPI session — see capi/session_store.ts. Postgres, not Redis, because
+  // the row holds a REFRESH token: losing it destroys the credential a customer
+  // re-authenticates with, not merely their session.
+  model CapiSession {
+    id           String    @id @db.VarChar(64) // sha256 of the session id, never the raw bearer
+    accessToken  String    @map("access_token")
+    refreshToken String    @map("refresh_token")
+    idToken      String?   @map("id_token")
+    expiresAt    DateTime  @map("expires_at") // Shopify's ACCESS-token expiry — drives the refresh, not the session's life
+    lastUsedAt   DateTime? @map("last_used_at")
+    createdAt    DateTime  @default(now()) @map("created_at")
+    @@index([lastUsedAt])
+    @@map("capi_sessions")
+  }
   ```
 
-  No Postgres tables are needed for OTP or IdP session state — all of that lives in Redis with
-  TTLs (see below). Only the durable `Customer` identity itself is Postgres.
+  OTP and IdP handshake state need no Postgres tables — those are short-lived and live in Redis
+  with TTLs (see below). What must be durable is Postgres: the `Customer` identity, and the CAPI
+  session, whose refresh token outlives any cache TTL you would want to set.
+
+  **The session row carries no customer identity, deliberately.** It is a token locker: session id
+  → Shopify's tokens. Who the customer is comes from Shopify on each request (`getCapiCustomer`
+  with the access token), so Shopify stays the single source of truth for identity and there is no
+  second copy to drift. Add a `shopifyId` column only if you actually need a customer → sessions
+  lookup (e.g. "log this customer out everywhere"); an unused nullable column plus its index is
+  cost with no benefit.
+
+  **Tokens are stored as Shopify issued them.** If your threat model requires encryption at rest,
+  encrypt the three token columns in `toRow`/`fromRow` — that is the only place they are converted.
+  Note what that buys and does not: the key has to live somewhere the app can read, so it protects
+  a stolen dump or replica, not a compromised app. Decide explicitly rather than by default.
 - **Zod** for request validation.
 - **India-shaped phone validation out of the box** (`+91` and 10 digits) — this is the one place
   the reference code assumes a specific country. Swap the regex in `capi-idp/routes/schemas.ts`
@@ -195,7 +223,7 @@ real measured latency numbers if you need to set expectations with a client/PM.
 | `capi/handshake.ts` | `beginCapiHandshake()` — mints PKCE + state, writes the pending record, and builds Shopify's authorize URL. The one entry point `routes/capi_handlers.ts`'s `startCapiAuthorizeHandler` uses to start the redirect, whether it's an ordinary login or the checkout-warmup path (via its `extras` param — `bindHash`/`grantToken`/`returnTo`). |
 | `capi/token_exchange.ts` | Talks to Shopify's own OAuth token endpoint — exchanges an authorization code (or refresh token) for a CAPI access/refresh/id token set. Needed regardless of which login path (custom IdP or Shopify-hosted) you use. |
 | `capi/session.ts` | Resolves/refreshes a CAPI session; `callWithCapiExpiry()` wraps any Shopify Customer Account API call and cleanly converts a server-side-revoked session into a 401 instead of an unhandled 502 — **use this wrapper (or the pattern in `middleware/customer.ts`) at every call site that uses a resolved CAPI access token.** `examples/using-call-with-capi-expiry.ts` shows both the throwing and return-null shapes extracted from real call sites. See "Known gotchas" below for why this matters. |
-| `capi/session_store.ts` | Redis storage for the actual CAPI session (30-day TTL, matching the refresh token's real lifetime), plus the single-use claim-token exchange the frontend uses to pick up its session id after the OAuth redirect chain completes. |
+| `capi/session_store.ts` | **Postgres** storage for the actual CAPI session (no TTL — it lives as long as Shopify honours the refresh token), plus the single-use claim-token exchange (still Redis, 5-min TTL) the frontend uses to pick up its session id after the OAuth redirect chain completes. Stores the sha256 of the session id, never the raw bearer, so a table dump yields nothing replayable. |
 | `capi/customer.ts` | Fetches the CAPI-authenticated customer's identity from Shopify's Customer Account API. |
 | `shopify-admin/customer-lookup.ts` | Look up an existing Shopify customer by phone or email via the Admin API — the "does this identity already exist" check for a verified OTP. Only relevant to the custom-IdP path (Shopify's own hosted login handles this itself). |
 | `shopify-admin/customer-create.ts` | Creates a brand-new Shopify customer for a phone/email-verified signup with no existing record. **Read the comment on `CREATE_CUSTOMER_MUTATION` before touching this file** — see "Known gotchas" below. |
@@ -286,6 +314,58 @@ Everything above, plus:
 6. Do all of this **separately per environment** (dev/staging/prod each need their own Shopify
    registration and their own signing key, since each has a different domain).
 
+## Already running the Redis-backed session store? Migrate without logging anyone out
+
+Earlier versions of this kit kept the CAPI session in Redis under
+`capiauth:capi_session:<id>` with a 30-day TTL. If you have live sessions there, do **not** cut
+over by swapping the file — that logs out every signed-in customer. Two safe options, and you can
+use both:
+
+**1. Lazy migration (zero-downtime, no script).** Have `getCapiSession` fall through to the old
+Redis key on a Postgres miss, migrate the row forward, then delete the Redis copy:
+
+```ts
+const row = await prisma().capiSession.findUnique({ where: { id: key } });
+if (row) return fromRow(row);
+// legacy fallthrough — GETDEL so two concurrent readers can't both migrate
+const raw = (await redis().call('GETDEL', `capiauth:capi_session:${id}`)) as string | null;
+if (!raw) return null;
+const parsed = legacyRecordSchema.safeParse(JSON.parse(raw)); // validate, don't cast
+if (!parsed.success) return null;                             // let them log in again
+await prisma().capiSession.upsert({ where: { id: key }, create: { id: key, ...toRow(parsed.data) }, update: {} });
+return parsed.data;
+```
+
+Two details that are easy to get wrong and both cause logouts:
+
+- **The loser of the `GETDEL` must re-read Postgres, not return null.** A page firing several
+  authenticated requests at once will have one win the `GETDEL` and the rest find nothing — return
+  null there and you 401 a customer who is genuinely signed in.
+- **Validate the legacy record; never cast it.** But note `z.string().optional()` *rejects* `null`.
+  If any writer ever stored `idToken: null` rather than omitting the key, that branch rejects real
+  sessions. Check what your own writer actually produced before trusting the schema.
+
+Keep the fallthrough until a `SCAN MATCH capiauth:capi_session:*` comes back empty — not until a
+date, since Shopify decides how long a refresh token lives.
+
+**2. Bulk backfill (`capi-idp/scripts/backfill-capi-sessions.ts`).** Lazy migration only moves a
+customer when they return, so it leaves a tail as long as the old TTL. This copies them all at
+once and **cannot log anyone out**, because of three choices:
+
+- reads with `GET`, never `GETDEL`
+- writes with `ON CONFLICT DO NOTHING`, so a row the app already migrated — or refreshed to a
+  *newer* token — is never overwritten with the stale value we read
+- **never deletes a Redis key.** Postgres is checked first, so once the row exists Redis is simply
+  never consulted, and the key expires on its own
+
+Every failure mode therefore degrades to "the lazy path handles it later". Run `--dry-run` first;
+it reports how many would insert, how many are already present, and how many fail validation —
+that last number is the one to look at before writing anything.
+
+It is bulk on purpose (one `MGET`, one id `SELECT`, chunked inserts). A per-key version is
+latency-bound at ~2 round trips per session, which over an SSH tunnel to a remote database turns
+a few hundred rows into minutes.
+
 ## Known gotchas — already hit and fixed once; don't reintroduce them
 
 - **Shopify reuses its own customer-account session, so a login can return the WRONG customer.**
@@ -315,7 +395,7 @@ Everything above, plus:
      to the **same** person and was refused anyway. Exchange the code, resolve the actual
      customer (`getCapiCustomer`), and compare it to the one the grant was minted for. Same
      customer → let them in. Different → refuse, delete the just-minted session (it is a live
-     30-day credential for the wrong customer), and redirect them through Shopify's logout using
+     long-lived credential for the wrong customer), and redirect them through Shopify's logout using
      that session's `id_token` so their retry starts clean — refusing alone dead-ends them, since
      every retry short-circuits to the same wrong identity until Shopify's session expires.
      Compare ids on their numeric tail: the Customer Account API returns

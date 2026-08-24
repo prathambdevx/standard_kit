@@ -286,7 +286,7 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
   // The app's checkout warm-up: this browser already belongs to a signed-in
   // customer and only came through here so Shopify would set its own cookie in
   // this cookie jar. There is no session to issue — minting one would leave a
-  // spare 30-day record nobody redeems — so the code is simply abandoned (it
+  // spare session record nobody redeems — so the code is simply abandoned (it
   // expires on Shopify's side) and the browser goes on to checkout.
   //
   // The identity gate still applies, and matters more here than on the normal
@@ -364,7 +364,7 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
   // session just minted is for whoever Shopify already had. Confirm that is the
   // same customer who passed OTP before handing it over; a mismatch is the
   // account-takeover case this gate exists for, so the session is destroyed
-  // rather than left redeemable for its full 30-day TTL.
+  // rather than left redeemable indefinitely.
   if (expectedShopifyId) {
     let actualShopifyId: string | null = null;
     let idToken: string | undefined;
@@ -413,7 +413,7 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
     }
   }
 
-  // The real session id is a 30-day bearer credential — never put it in a
+  // The real session id is a long-lived bearer credential — never put it in a
   // URL (browser history, access logs, Referer leakage). Redirect with a
   // short-lived, single-use claim token instead; the frontend trades it for
   // the real id via capiClaimSessionHandler below, in a JSON body, not a URL.
@@ -426,7 +426,8 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
 // Revokes the caller's own CAPI session server-side on logout. Without this,
 // clearing the client store only drops the local copy: the Redis record — which
 // wraps live Shopify access + refresh tokens — stayed redeemable for its full
-// 30-day TTL, so a leaked id outlived the logout that was meant to kill it.
+// indefinitely, so a leaked id outlives the logout meant to kill it — which
+// matters more now the session has no TTL to eventually clean up after a miss.
 // Idempotent, and 200 even when Redis is unreachable: a logout must never fail
 // in a way that leaves the client unable to finish clearing its own state. The
 // swallow is reported rather than hidden, since a session that outlives its
@@ -499,7 +500,7 @@ export async function capiClaimSessionHandler(c: Context): Promise<Response> {
     });
   }
   // Bound to the browser that completed the CAPI flow. Without this, a single
-  // relayed URL put a victim into the attacker's 30-day session — and the web
+  // relayed URL put a victim into the attacker's long-lived session — and the web
   // callback clears any v1 credential first, so the attacker's won outright.
   if (!bindSecretMatches(body.bindSecret, claimed.bindHash)) {
     throw new UnauthorizedError('This sign-in link was not issued to this browser', {

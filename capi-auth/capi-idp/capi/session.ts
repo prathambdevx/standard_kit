@@ -94,8 +94,8 @@ export async function resolveCapiSession(input: {
   // customer revoked the app, changed their password, or signed out elsewhere.
   // Letting that throw made every authed request 502 forever — and 502 isn't an
   // auth error, so the client never healed. The shopper sat in a logged-in UI
-  // with writes silently failing and no way out, while the dead record kept its
-  // full 30-day TTL. Deleting it and reporting "not resolvable" drops them to
+  // with writes silently failing and no way out, while the dead row sat there
+  // indefinitely. Deleting it and reporting "not resolvable" drops them to
   // guest, which every caller already handles.
   //
   // Only 4xx is treated as dead. A 5xx or a network blip is a genuine outage and

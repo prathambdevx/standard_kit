@@ -36,7 +36,7 @@ Both end with the customer holding a real Shopify session; they differ only in *
 | `state` | Random per-handshake id sent to Shopify and returned on the callback; the lookup key for the pending record above. |
 | `codeVerifier` / `codeChallenge` | PKCE pair. The verifier stays server-side in the pending record; only the S256 challenge goes to Shopify. |
 | **claim token** — `capi_claim_<uuid>` | Short-lived single-use stand-in for the real session id, so the id never rides in a redirect URL. Traded in a JSON body via `/capi/claim`. 5 min TTL. |
-| **CAPI session id** — `capi_sess_<uuid>` | The real 30-day bearer credential. Wraps Shopify's access token, refresh token and `idToken`. |
+| **CAPI session id** — `capi_sess_<uuid>` | The real bearer credential, long-lived (no TTL — it lasts as long as Shopify honours the refresh token). Wraps Shopify's access token, refresh token and `idToken`. Only its sha256 is stored. |
 | `idToken` | Shopify's id_token for the session. Required as `id_token_hint` on logout — Shopify rejects an end-session request without it. |
 | `grantToken` | The silent-grant token, carried inside the pending record. Still unconsumed at callback time means Shopify skipped your IdP, which triggers the identity re-check. |
 
