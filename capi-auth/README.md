@@ -132,12 +132,14 @@ Both pieces assume:
   // re-authenticates with, not merely their session.
   model CapiSession {
     id           String    @id @db.VarChar(64) // sha256 of the session id, never the raw bearer
+    shopifyId    String?   @map("shopify_id") @db.VarChar(255) // gid://shopify/Customer/<id>, from the id_token's sub
     accessToken  String    @map("access_token")
     refreshToken String    @map("refresh_token")
     idToken      String?   @map("id_token")
     expiresAt    DateTime  @map("expires_at") // Shopify's ACCESS-token expiry — drives the refresh, not the session's life
     lastUsedAt   DateTime? @map("last_used_at")
     createdAt    DateTime  @default(now()) @map("created_at")
+    @@index([shopifyId])
     @@index([lastUsedAt])
     @@map("capi_sessions")
   }
@@ -147,12 +149,28 @@ Both pieces assume:
   with TTLs (see below). What must be durable is Postgres: the `Customer` identity, and the CAPI
   session, whose refresh token outlives any cache TTL you would want to set.
 
-  **The session row carries no customer identity, deliberately.** It is a token locker: session id
-  → Shopify's tokens. Who the customer is comes from Shopify on each request (`getCapiCustomer`
-  with the access token), so Shopify stays the single source of truth for identity and there is no
-  second copy to drift. Add a `shopifyId` column only if you actually need a customer → sessions
-  lookup (e.g. "log this customer out everywhere"); an unused nullable column plus its index is
-  cost with no benefit.
+  **`shopifyId` is what makes the session row findable by customer.** Authentication never needs
+  it — identity comes from Shopify on each request (`getCapiCustomer` with the access token), and
+  Shopify stays the source of truth. But without it you cannot answer the questions that arrive at
+  the worst possible moment: *log this customer out of every device*, *show me their sessions,
+  they report their account is compromised*, *delete their sessions, they requested erasure*. Every
+  mainstream OAuth library stores it (Auth.js `userId`, Doorkeeper `resource_owner_id`, Passport
+  `user_id`, Spring `principal_name`) and none of them make it optional.
+
+  It costs nothing to populate: Shopify's `id_token` already carries the customer in its `sub`
+  claim, so `toRow` decodes it with no network call. Do **not** resolve it by calling Shopify per
+  row — most access tokens will be expired, so you would spend a refresh token each time, which is
+  slow, rate limited, and risks live sessions. Parsing without verifying is correct here: the token
+  came from Shopify's token endpoint over TLS and is read as a label, never for an auth decision.
+
+  **Store it in the same notation you use for customer ids elsewhere.** `sub` is bare numeric; if
+  your customer table holds `gid://shopify/Customer/<id>`, storing `sub` raw makes the join return
+  **zero rows** — silently, reading as "this customer has no sessions" rather than failing. The
+  reference code stores the GID form for that reason; change it if your convention differs, but
+  make the two match.
+
+  One trap when populating it on update as well as create: emit the field **only when resolvable**.
+  Spreading a `null` through the update branch will wipe an id an earlier write already resolved.
 
   **Tokens are stored as Shopify issued them.** If your threat model requires encryption at rest,
   encrypt the three token columns in `toRow`/`fromRow` — that is the only place they are converted.
@@ -365,6 +383,12 @@ that last number is the one to look at before writing anything.
 It is bulk on purpose (one `MGET`, one id `SELECT`, chunked inserts). A per-key version is
 latency-bound at ~2 round trips per session, which over an SSH tunnel to a remote database turns
 a few hundred rows into minutes.
+
+**3. Filling `shopifyId` on rows that predate it
+(`capi-idp/scripts/backfill-capi-session-shopify-ids.ts`).** If you added the column after sessions
+already existed, this decodes each row's own `id_token` and fills the blanks — no Shopify calls, one
+bulk `UPDATE` per 500 rows. It only ever fills a `NULL` and never overwrites, so it is safe to
+re-run and safe to run alongside live traffic.
 
 ## Known gotchas — already hit and fixed once; don't reintroduce them
 

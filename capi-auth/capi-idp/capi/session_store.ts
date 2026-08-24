@@ -29,14 +29,36 @@ export interface CapiSessionRecord {
 // table dump then yields no replayable sessions.
 const storedId = (id: string) => createHash('sha256').update(id).digest('hex');
 
+// The id_token's `sub` is the customer id, so no Shopify call is needed. GID form
+// to match however you store the customer id elsewhere — see the README.
+function customerGidFromIdToken(jwt: string | undefined): string | null {
+  if (!jwt) return null;
+  try {
+    const payload = jwt.split('.')[1];
+    if (!payload) return null;
+    const { sub } = JSON.parse(Buffer.from(payload, 'base64url').toString()) as { sub?: string };
+    return sub ? `gid://shopify/Customer/${sub}` : null;
+  } catch {
+    // A malformed id_token must never fail session creation — this column is
+    // for operator lookups, not for auth.
+    return null;
+  }
+}
+
 // epoch seconds on the record, timestamp in the column — converted only here.
 // Tokens are stored as Shopify issued them; see the README's note on encryption.
-const toRow = (rec: CapiSessionRecord) => ({
-  accessToken: rec.accessToken,
-  refreshToken: rec.refreshToken,
-  idToken: rec.idToken ?? null,
-  expiresAt: new Date(rec.expiresAt * 1000),
-});
+const toRow = (rec: CapiSessionRecord) => {
+  const shopifyId = customerGidFromIdToken(rec.idToken);
+  return {
+    accessToken: rec.accessToken,
+    refreshToken: rec.refreshToken,
+    idToken: rec.idToken ?? null,
+    expiresAt: new Date(rec.expiresAt * 1000),
+    // Omitted when unresolvable, never null: an update must not wipe an id a
+    // previous write already resolved.
+    ...(shopifyId ? { shopifyId } : {}),
+  };
+};
 
 const fromRow = (row: {
   accessToken: string;
