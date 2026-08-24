@@ -18,6 +18,7 @@ conventions differ per repo, but the underlying rules and workflow don't.
 | **`tooling/`** | Lint/format/commit-gate baseline — Biome config, lefthook (pre-commit + commit-msg), commitlint |
 | **`comments/`** | Comment-style rules (frontend + backend) + a hook that reminds the model of them right after every edit |
 | **`build-page/`** | Page/component generation skills from a CSS dump or Figma MCP URL, plus the spacing-decision rule they depend on |
+| **`cms-blocks/`** | Architecture doc for "any CMS block on any page" — one global `__typename → component` registry plus a single catch-all route, replacing per-page view files and block maps. Covers the three layers that must each know every block (CMS dynamic zone, API query union, frontend registry), why per-page variation belongs on a CMS field rather than a code override, a measured take on the performance question (RSC means no client-bundle cost; the real cost is dev HMR, not the prod build), what the pattern rules out, and the migration ordering that breaks page resolution if you get it wrong |
 | **`image-optimization/`** | Next.js image audit skill — correct width/height/sizes/quality/priority, with a savings-estimate report format |
 | **`web-conventions/`** | React/Next.js engineering skills — layout-thrashing fixes, state-management decision tree, perf rule pass, hook conventions, 39 react-best-practices rules, App Router patterns, utils-vs-lib placement decision tree |
 | **`qa-fix/`** | Visual QA across the standard breakpoint set + a bounded fix→re-QA loop, with a running learnings log |
