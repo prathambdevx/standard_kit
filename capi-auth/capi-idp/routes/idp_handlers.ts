@@ -149,5 +149,10 @@ export function logoutHandler(c: Context): Response {
   if (q.post_logout_redirect_uri && isAllowedRedirectUri(q.post_logout_redirect_uri)) {
     return c.redirect(q.post_logout_redirect_uri, 302);
   }
+  // No usable redirect target from the caller — send them to our login page
+  // instead of the bare text below (checkout's own logout hits this).
+  if (env.LOGIN_PAGE_URL) {
+    return c.redirect(env.LOGIN_PAGE_URL, 302);
+  }
   return c.text('Logged out', 200);
 }
