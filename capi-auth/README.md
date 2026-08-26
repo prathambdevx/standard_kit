@@ -1,11 +1,15 @@
 # capi-auth — OTP login + Shopify Customer Account API custom IdP
 
-Two independent pieces for wiring phone/email OTP login into a Bun + Hono BFF, optionally backed
-by Shopify as a custom OpenID Connect identity provider for its Customer Account API (CAPI).
+Three pieces for wiring phone/email OTP login into a Bun + Hono BFF, optionally backed by Shopify
+as a custom OpenID Connect identity provider for its Customer Account API (CAPI) — backend
+(`capi-idp/`, `otp-engine/`) and frontend (`capi-web/`, see "Frontend wiring" below).
 
-**Point Claude at this whole `capi-auth/` folder and say "set this up in my project"** — this
-README has everything it needs: what to copy where, what env vars to add, how to register with
-Shopify, and the real bugs already hit and fixed so they don't get reintroduced.
+**Run `/wire-capi-auth`** (or point Claude at this whole `capi-auth/` folder and say "set this up
+in my project") — `wire-capi-auth/SKILL.md` wires backend AND frontend into your project and
+validates the result end to end, so you never have to think about auth again once it finishes.
+This README is what that skill reads — everything it needs is here: what to copy where, what env
+vars to add, how to register with Shopify, and the real bugs already hit and fixed so they don't
+get reintroduced. Read it directly if you'd rather wire by hand.
 
 ## Do you even need the custom IdP?
 
@@ -331,6 +335,78 @@ Everything above, plus:
    you wire it up, it is easy to ship without ever hitting the rejection.
 6. Do all of this **separately per environment** (dev/staging/prod each need their own Shopify
    registration and their own signing key, since each has a different domain).
+
+## Frontend wiring
+
+Everything above is backend — a working IdP + OTP engine with nothing to talk to it. `capi-web/`
+is the client half: two Zustand stores, the wiring between them, and the claim-token exchange.
+Framework-agnostic (React web today; the `StorageLike` seam is the same shape mobile/React Native
+would inject) and copy-paste like the rest of this kit, not an installable package.
+
+| File | What it is |
+|---|---|
+| `capi-web/stores/session.ts` | **v1** — the legacy Storefront `customerAccessToken` session. Optional: skip it entirely if your app is CAPI-only. |
+| `capi-web/stores/capi_session.ts` | **v2** — the CAPI login. Holds only the opaque BFF session id, never Shopify's real tokens (the BFF keeps those server-side, see `capi-idp/capi/session_store.ts`). |
+| `capi-web/commerce.ts` | Wires the two stores together — `createAuthStores(storage)`, `useIsLoggedIn`/`useSessionHydrated` hooks, and `onAuthEdge()` for your own product stores (cart, wishlist, whatever) to hook the login/logout transition. |
+| `capi-web/bind_secret.ts` | Mints and reads the browser-binding secret the claim exchange requires — see "The one rule" below before skipping this. |
+| `capi-web/capi_callback.ts` | `exchangeCapiClaim()` — trades the one-time claim token from Shopify's redirect for the real CAPI session id, and populates both stores correctly. |
+| `capi-web/heal_auth.ts` | `isAuthError()` + the `healAuthIfRejected` pattern every write-through store (cart, wishlist, addresses) needs in its catch block. |
+| `capi-web/examples/login_flow_example.tsx` | A deliberately minimal, unstyled reference for the OTP-send → verify → (details-required) → claim state machine. Not meant to be used as-is — see its own file header. |
+
+### Why two stores, and why they're never both populated
+
+A customer holds a v1 Storefront session **or** a v2 CAPI session, never both — the whole frontend
+half of this kit is built around checking both and never assuming which one is live:
+
+```ts
+const isLoggedIn = () => session.getState().isLoggedIn /* v1 */ || capiSession.getState().isActive /* v2 */;
+```
+
+Skipping this and reading only one store is the single most common bug shape here: a CAPI login
+never sets the v1 store's `isLoggedIn`, so any login-gate, header, or redirect-if-logged-in check
+that reads only `session` silently treats every v2 customer as a guest.
+
+### The one rule: `healAuthIfRejected` in every write-through store
+
+A 401 from the BFF means the credential is dead server-side — expired, revoked, or the customer
+signed out elsewhere. If a store's catch block swallows that error instead of clearing the local
+session, the UI keeps showing the customer as logged in and every write **looks** like it saved but
+silently never persists. This is not hypothetical — it's the exact bug bsc-platform's own
+`wishlist/store.ts` carries a comment about, from having shipped it once. Copy the pattern in
+`heal_auth.ts`'s doc comment into every store that writes on behalf of a logged-in customer.
+
+### The claim-token exchange, and why the bind secret is mandatory
+
+Shopify's CAPI redirect hands your app a one-time **claim token** in the URL, not the real session
+id — a long-lived bearer credential has no business sitting in browser history or a `Referer`
+header. `exchangeCapiClaim()` trades it for the real id via one POST.
+
+That claim POST **must** carry `bindSecret` — `capi-web/bind_secret.ts` mints one into
+`sessionStorage` before the redirect and reads it back after. Skipping this (making it optional, or
+letting a missing hash pass) reopens exactly the relay attack the binding exists to close: whoever
+holds the claim token — not necessarily the customer who started the login — gets the session. See
+`capi-idp/routes/capi_handlers.ts`'s own note on this same requirement, server-side.
+
+### End-to-end sequence
+
+```
+customer submits phone/email
+  → OTP send (capi-idp/routes/otp_handlers.ts)
+  → OTP verify
+      ├─ returning customer with a usable email → claim token + bind secret minted
+      └─ status: details_required            → collect email, THEN claim token + bind secret minted
+  → full-page redirect to Shopify, back to your CAPI callback route
+  → exchangeCapiClaim(claimToken, bindSecret, ...)
+      → v1 dropped if still live, v2 capiSession.setSession(sessionId)
+      → capiSession.setCustomer(profile) (best-effort)
+  → customer logged in — useIsLoggedIn() flips true, onAuthEdge()'s onLogin() fires
+```
+
+### Automated wiring
+
+Reading this section and hand-porting `capi-web/` into a new project every time is exactly the
+manual work `wire-capi-auth/SKILL.md` (sibling folder) exists to remove — point Claude at this
+whole `capi-auth/` folder and it wires backend, frontend, and validates the result end to end.
 
 ## Already running the Redis-backed session store? Migrate without logging anyone out
 
