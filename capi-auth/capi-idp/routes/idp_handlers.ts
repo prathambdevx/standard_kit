@@ -1,12 +1,13 @@
 // ── IdP: raw OIDC/OAuth2 JSON per spec, NOT our {data,meta} envelope — Shopify
 // (the relying party) is a standard OAuth client expecting the wire protocol's
 // own shapes at these specific endpoints. ──
-import { ServiceUnavailableError, UnauthorizedError } from '@devxcommerce/bff-core';
+import { log, ServiceUnavailableError, UnauthorizedError } from '@devxcommerce/bff-core';
 import type { Context } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { env } from '../../config/env';
 import { parseQuery } from '../../lib/parse-query';
 import {
+  allowedRedirectUris,
   authenticateClient,
   completeInteraction,
   exchangeAuthorizationCode,
@@ -14,7 +15,7 @@ import {
   getDiscoveryDocument,
   getJwks,
   getUserinfo,
-  isAllowedRedirectUri,
+  isAllowedPostLogoutRedirectUri,
   startAuthorize,
 } from '../../services/idp/provider';
 import { takeSilentGrant } from '../../services/idp/session_store';
@@ -67,6 +68,16 @@ export async function authorizeHandler(c: Context): Promise<Response> {
       // after startAuthorize just created it) — don't leave the browser
       // stuck, drop to the normal login-page prompt below.
     }
+  }
+
+  // prompt=none (OIDC §3.1.2.6) forbids any UI — checkout's sso=silent sends
+  // this, and answering with our login page rendered OTP inside checkout.
+  if (q.prompt === 'none' && q.redirect_uri) {
+    const target = new URL(q.redirect_uri);
+    target.searchParams.set('error', 'login_required');
+    if (q.state) target.searchParams.set('state', q.state);
+    log.info({ redirectUri: q.redirect_uri }, 'idp: prompt=none with no session — login_required');
+    return c.redirect(target.toString(), 302);
   }
 
   if (!env.LOGIN_PAGE_URL) {
@@ -144,10 +155,17 @@ export async function userinfoHandler(c: Context): Promise<Response> {
 
 export function logoutHandler(c: Context): Response {
   const q = parseQuery(c, idpLogoutQuerySchema);
-  // Same allowlist as /authorize. Redirecting anywhere the caller names turns
-  // our own origin into a phishing springboard, and OIDC requires the match.
-  if (q.post_logout_redirect_uri && isAllowedRedirectUri(q.post_logout_redirect_uri)) {
-    return c.redirect(q.post_logout_redirect_uri, 302);
+  // Exact-match allowlist plus any trusted Shopify origin — see isAllowedPostLogoutRedirectUri.
+  if (isAllowedPostLogoutRedirectUri(q.post_logout_redirect_uri)) {
+    return c.redirect(q.post_logout_redirect_uri as string, 302);
+  }
+  // Logged so a legitimate-but-unlisted callback (indistinguishable from an
+  // attack here) can be diagnosed instead of silently stranding the shopper.
+  if (q.post_logout_redirect_uri) {
+    log.warn(
+      { postLogoutRedirectUri: q.post_logout_redirect_uri, allowed: allowedRedirectUris() },
+      'idp/logout refused a post_logout_redirect_uri that is neither allowlisted nor Shopify-origin',
+    );
   }
   // No usable redirect target from the caller — send them to our login page
   // instead of the bare text below (checkout's own logout hits this).

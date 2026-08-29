@@ -69,7 +69,9 @@ Both end with the customer holding a real Shopify session; they differ only in *
 | `OTP_HASH_SECRET` | HMAC key for hashing OTP codes at rest. Rotating it invalidates every in-flight code. |
 | `IDP_CLIENT_ID` / `_SECRET` | Credentials **Shopify** uses to authenticate to your IdP. |
 | `IDP_SIGNING_KEY` | RSA key your IdP signs id/access tokens with; published at `/idp/jwks`. |
-| `IDP_ALLOWED_REDIRECT_URIS` | Exact-match allowlist for `/authorize` redirects **and** post-logout redirects. Fails closed — an unlisted URI is refused. |
+| `IDP_ALLOWED_REDIRECT_URIS` | Exact-match allowlist for `/authorize` redirects (auth-code carrying — stays exact-match only). Post-logout redirects also accept this list, **plus** any trusted Shopify origin — see `CAPI_CUSTOMER_ACCOUNT_HOST` below. |
+| `SHOPIFY_STORE_DOMAIN` | Your `<shop>.myshopify.com` domain — trusted as a post-logout redirect origin, since checkout's real sign-out callback lands there, not on the CAPI host. |
+| `CAPI_CUSTOMER_ACCOUNT_HOST` | Shopify's `<shop>.account.myshopify.com` customer-accounts host — also trusted as a post-logout redirect origin. |
 | `CAPI_CLIENT_ID` / `_SECRET` | Credentials **you** use as a client of Shopify's Customer Account API (mirror of the IdP pair). |
 | `CAPI_AUTHORIZE_ENDPOINT` / `CAPI_TOKEN_ENDPOINT` | Shopify's OAuth endpoints. The token endpoint is where the authorization code is exchanged for a session. |
 | `CAPI_REDIRECT_URI` | Your `/auth/capi/callback`, also registered on Shopify's side. |
@@ -88,3 +90,9 @@ had. That is why the callback re-checks identity after the exchange instead of
 trusting the code, and why logout must call `end_session_endpoint` with
 `id_token_hint`. Without both, a second login in the same browser can resolve
 to the wrong customer.
+
+**Checkout runs a silent `prompt=none` probe constantly** (Shopify's
+`sso=silent` mechanism) — `/idp/authorize` must answer it with
+`error=login_required` on the `redirect_uri`, never your login page. Getting
+this wrong renders your OTP screen *inside* checkout on every silent check,
+and completing it there signs the shopper back in right after they signed out.

@@ -92,6 +92,9 @@ export const idpAuthorizeQuerySchema = z.object({
   scope: z.string().optional(),
   code_challenge: z.string().optional(),
   code_challenge_method: z.string().optional(),
+  // OIDC prompt (§3.1.2.1) — only 'none' is acted on. Free string, not an enum,
+  // so an unrecognised value degrades to today's behaviour instead of a 400.
+  prompt: z.string().optional(),
 });
 
 export const idpLogoutQuerySchema = z.object({

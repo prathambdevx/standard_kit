@@ -78,6 +78,49 @@ export function isAllowedRedirectUri(uri: string | undefined): boolean {
   return !!uri && allowedRedirectUris().includes(uri);
 }
 
+/** A hostname and nothing else — no userinfo, port, path, query or fragment. */
+const BARE_HOSTNAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i;
+
+/** The authority of a url string: everything after the scheme, before any path/query/fragment. */
+const authority = (url: string): string =>
+  url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/)[0] ?? '';
+
+/** Origins Shopify may send a shopper back to after logout — checkout signs out to the storefront domain, not the CAPI host. */
+function trustedLogoutOrigins(): string[] {
+  const storeDomain = env.SHOPIFY_STORE_DOMAIN;
+  const hosts = [
+    // Bare hostname only — an unvalidated value could let `shop.com@evil.com`
+    // parse as URL userinfo, deriving the origin as `https://evil.com`.
+    storeDomain && BARE_HOSTNAME.test(storeDomain) ? `https://${storeDomain}` : undefined,
+    env.CAPI_CUSTOMER_ACCOUNT_HOST,
+  ];
+  return hosts.flatMap((h) => {
+    if (!h) return [];
+    // `@` in the authority is userinfo — url.username/password miss the case
+    // where both are empty strings but the origin still resolves past it.
+    if (authority(h).includes('@')) return [];
+    try {
+      return [new URL(h).origin];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** Post-logout only — exact-match allowlist plus any trusted Shopify origin, so sign-out needs no per-environment allowlist entry. */
+export function isAllowedPostLogoutRedirectUri(uri: string | undefined): boolean {
+  if (!uri) return false;
+  if (isAllowedRedirectUri(uri)) return true;
+  try {
+    const target = new URL(uri);
+    if (target.protocol !== 'https:') return false;
+    // Origin equality, never startsWith — `https://<shop>.myshopify.com.evil.tld` must not pass.
+    return trustedLogoutOrigins().includes(target.origin);
+  } catch {
+    return false;
+  }
+}
+
 export async function startAuthorize(params: AuthorizeParams): Promise<AuthorizeResult> {
   if (!env.IDP_CLIENT_ID || params.clientId !== env.IDP_CLIENT_ID) {
     return { ok: false, error: 'unauthorized_client' };
