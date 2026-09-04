@@ -41,11 +41,33 @@ export async function findOrLazyFillByEmail(
   deps: Deps = {},
 ): Promise<IdentityLookup> {
   const cached = await prisma().customer.findUnique({ where: { email } });
-  if (cached) return { status: 'ready', customer: cached };
+  if (cached?.shopifyId) return { status: 'ready', customer: cached };
 
   const adminFindByEmail = deps.adminFindByEmail ?? findCustomerByEmail;
   const admin = await adminFindByEmail(email);
-  if (!admin) return { status: 'new' };
+  if (!admin) return cached ? { status: 'ready', customer: cached } : { status: 'new' };
+
+  // A cached row with no shopifyId (e.g. an import that never linked
+  // Shopify) gets patched in place — a targeted update by id, not the
+  // upsert-by-key path below, which keys on Shopify's canonical email and
+  // could miss this exact row if it's cased differently.
+  if (cached) {
+    const customer = await prisma()
+      .customer.update({
+        where: { id: cached.id },
+        data: { shopifyId: admin.id, name: admin.name, phone: admin.phone },
+      })
+      .catch(async (err) => {
+        // shopifyId is @unique — another row may already legitimately own
+        // this Shopify customer. Return that canonical row instead of 502-ing.
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          const winner = await prisma().customer.findUnique({ where: { shopifyId: admin.id } });
+          if (winner) return winner;
+        }
+        throw err;
+      });
+    return { status: 'ready', customer };
+  }
 
   // Key on Shopify's canonical address, not the string the client typed —
   // Shopify's search is case-insensitive but Postgres VarChar equality is not,
@@ -102,14 +124,36 @@ export async function findOrLazyFillByPhone(
   // A local row whose email is unusable is re-gated rather than trusted: it may
   // predate this rule (a synthetic placeholder written by an older version), and
   // Shopify is the source of truth for whether a real address exists now.
-  if (cached && isWellFormedEmail(cached.email)) return { status: 'ready', customer: cached };
+  // Missing shopifyId is the other re-gating trigger — a row can have a fine
+  // email and still never have been linked to Shopify at all.
+  if (cached?.shopifyId && isWellFormedEmail(cached.email)) {
+    return { status: 'ready', customer: cached };
+  }
 
   const adminFindByPhone = deps.adminFindByPhone ?? findCustomerByPhone;
   const admin = await adminFindByPhone(phoneE164);
-  if (!admin) return { status: 'new' };
+  if (!admin) return cached ? { status: 'ready', customer: cached } : { status: 'new' };
   if (!isWellFormedEmail(admin.email)) return { status: 'incomplete', admin };
 
   const email = admin.email as string;
+
+  // A cached row missing shopifyId gets patched in place — avoids the
+  // upsert-by-email path below, which could target a different row entirely.
+  if (cached && !cached.shopifyId) {
+    const customer = await prisma()
+      .customer.update({
+        where: { id: cached.id },
+        data: { shopifyId: admin.id, name: admin.name, email, phone: phoneE164 },
+      })
+      .catch((err) => {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          return cached;
+        }
+        throw err;
+      });
+    return { status: 'ready', customer };
+  }
+
   const row =
     (await prisma().customer.findUnique({ where: { shopifyId: admin.id } })) ??
     (await prisma()
