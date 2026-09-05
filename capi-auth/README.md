@@ -104,6 +104,32 @@ and the numbers say it shouldn't. Full data in
 [Open items](#open-items--known-gaps-deliberately-unsolved); short version: the harmful outcome is a
 fraction of a percent, and it is not what a merge flow would fix.
 
+This is a *signup-time* collision — a customer typing an identifier someone else already owns. It's
+unrelated to the *lookup*-time bug below, which was about resolving a genuine identifier to the wrong
+owner.
+
+### Resolving an identifier to its owner, not to a search hit
+
+`shopify-admin/customer-lookup.ts` uses `customerByIdentifier(identifier: { phoneNumber | emailAddress })`
+— Shopify's direct "who owns this" resolution — not `customers(query: "phone:...")` search.
+
+That distinction is not cosmetic. A `customers(query:)` search matches the identifier **anywhere** on a
+customer record, a saved **shipping address** phone included, and returns a result *set* with no
+guarantee the true owner sorts first. Taking `nodes[0]` — the obvious-looking implementation — can hand
+back a customer who merely shipped an order to that number, not the person who owns it. A verified OTP
+then opens a session on **their** account.
+
+This is not hypothetical: it happened in the production store this kit was extracted from
+(2026-09-05). Customer A verified an OTP on their own phone; the search matched Customer B instead,
+because B had once shipped an order to A's number and Shopify's search indexes that too. `customerByIdentifier`
+does not have this failure mode — it answers ownership directly, so there is no result set to
+disambiguate and nothing for a saved address to poison.
+
+**If you fork this kit before this fix landed**, or you're auditing a similar `customers(query:)` lookup
+elsewhere in your stack, the tell is `nodes[0]` (or any un-verified first result) feeding an
+authentication decision. Confirm the returned record's own `phone`/`email` actually equals what you
+searched for — or better, switch to `customerByIdentifier` and skip the check entirely.
+
 ## Prerequisites
 
 Both pieces assume:
@@ -228,6 +254,8 @@ Both pieces assume:
 
 ```bash
 OTP_HASH_SECRET=          # required at call time — HMAC secret for hashing codes at rest. Generate with: openssl rand -hex 32
+APP_STAGE=                # dev | uat | prod — gates SMS/email sending (sms.ts, email.ts). NOT the same as NODE_ENV,
+                           # which is `production` on dev and uat too, so it can't tell environments apart on its own.
 ```
 
 **Verified against NIST SP 800-63B + OWASP** — see `otp-engine/README.md` for the full checklist
@@ -253,7 +281,7 @@ real measured latency numbers if you need to set expectations with a client/PM.
 | `routes/index.ts`, `routes/otp_handlers.ts`, `routes/idp_handlers.ts`, `routes/capi_handlers.ts`, `routes/shared.ts`, `routes/schemas.ts` (see `routes/variables.md`) | The Hono routes: OTP send/verify/resend/details, the IdP endpoints (`/authorize`, `/token`, `/.well-known/*`, JWKS) if using the custom IdP, and the CAPI endpoints (`/capi/start`, `/capi/callback`, `/capi/claim`, `/capi/logout`, `/capi/checkout-grant` — mobile-app-only, mints a warm-up grant for an already-signed-in customer opening a checkout webview; see "Known gotchas"). |
 | `email-domain.ts` | The one email-validation module: `isWellFormedEmail()` (shape, via `z.string().email()`) and `checkEmailDomain()` (live MX lookup). Used by the details handler and by the login gate. The MX check fails open on any timeout/resolver error — only a confirmed no-MX-records result rejects. |
 | `middleware/customer.ts` | Route-gating middleware — resolves a `capi_sess_<uuid>` session id from the `Authorization: Bearer` header to a local customer. `requireCustomer` 401s when missing/invalid; `optionalCustomer` + `readOptionalCustomer` resolve the same credential without ever throwing, for a route that serves guests and signed-in shoppers from one handler (wishlist, PDP) — an invalid/expired token degrades to guest rather than 401ing a page that renders fine without auth. If your app also has some other login path issuing a different bearer-credential shape on the same header, branch on a prefix the same way this file's own comment describes — resolve each kind through its own function, cached under its own key prefix. |
-| `repositories/customers.ts`, `customer_signup.ts` | Postgres upsert logic for the local `Customer` row, keyed by `shopifyId`, lazily backfilled from Shopify on a cache miss. |
+| `repositories/customers.ts`, `customer_signup.ts` | Postgres upsert logic for the local `Customer` row, keyed by `shopifyId`, lazily backfilled from Shopify on a cache miss. `customer_signup.ts` degrades rather than fails when the typed phone (opportunistic, never OTP-proven) is already held by a different local row — Shopify has already minted the account by that point, so completing the signup without that one field beats a 500 that strands a real customer with no local row at all. |
 | `repositories/idp_interactions.ts`, `idp_auth_codes.ts` | Redis-backed short-lived OIDC handshake state (custom-IdP path only). |
 | `examples/using-call-with-capi-expiry.ts` | Not imported by anything — a reference showing `callWithCapiExpiry`'s two real usage shapes (throw vs. return-null) with the surrounding project-specific logic stripped out. Copy the pattern into your own handlers rather than importing this file. |
 
@@ -643,6 +671,16 @@ kit was extracted from (612,884 customers, 2026-08). Aggregates only — no per-
 | **No phone at all** | **233,441** | **38.1%** |
 | Phones shared by 2+ customer records | 13 pairs (26 customers) | 0.004% |
 | **Emails shared by 2+ customer records** | **0** | **0%** |
+
+**The 13 phone pairs are still unverified against `customerByIdentifier`, deliberately not claimed as
+handled.** They're real historical data — two genuinely different Shopify customers who both have the
+*same* phone as their own field, from before Shopify enforced phone uniqueness. `customerByIdentifier`'s
+resolution on a genuine tie (return one arbitrarily? error?) is not documented by Shopify and no live
+example was available to test it against at the time this was written. This is a different case from
+the wrong-account bug above — that one had exactly one true owner and a fuzzy search obscuring them; this
+one may have no single correct answer at all. If your data has any duplicate phones, test this path
+before relying on it, and prefer a merge/tie-break decision (see BSC's own resolution: whoever placed the
+most recent order wins) over trusting whatever the API happens to return.
 
 **Zero shared emails out of 612,884.** Shopify blocks duplicate emails outright, which is exactly why a
 colliding `customerUpdate` is *rejected* rather than silently merging — the platform is already doing

@@ -31,3 +31,16 @@ only handles storage/attempt-limiting around it.
 **Not covered here:** actual SMS/email delivery — retries, carrier failover, deliverability.
 That's whatever vendor you plug into `provider.ts`. This folder is only responsible for
 generating, storing, and checking the code correctly.
+
+## Support tooling
+
+`scripts/decode-otp.ts` recovers the plaintext code for a live (or previously captured)
+challenge — brute-forcing all 1,000,000 six-digit values against the stored hash, which
+costs the same few hundred milliseconds as one real login attempt, not a real brute force.
+Needs `OTP_HASH_SECRET` and either an `otpId` (reads the live challenge from Redis) or an
+already-known `codeHash`. Read-only — never consumes or expires the challenge.
+
+This doesn't weaken the "code never logged" property above: running it already requires
+the app secret plus backend access to the challenge store, which is the same access level
+needed to forge a session by other means. It grants no new privilege — it just saves
+re-deriving the hash math by hand for a support ticket.
