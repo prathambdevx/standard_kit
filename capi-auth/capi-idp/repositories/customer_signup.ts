@@ -1,3 +1,4 @@
+import { log } from '@devxcommerce/bff-core';
 import type { Customer } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../db/client';
@@ -62,6 +63,19 @@ export async function createCustomerFromSignup(input: CreateInput): Promise<Cust
       // owning this number must degrade the signup, not fail it — otherwise the caller
       // is left with a live Shopify account and no local row at all.
       if (input.phone && collidedOn(err, 'phone')) {
+        // Shopify accepted this number but a local row already holds it, so our copy
+        // disagrees with Shopify — the drift behind the wrong-account bug. Both ids are
+        // enough to find the row; the number itself stays out of logs.
+        const holder = await prisma().customer.findUnique({ where: { phone: input.phone } });
+        log.warn(
+          {
+            code: 'customer_phone_drift',
+            shopifyId: input.shopifyId,
+            heldByCustomerId: holder?.id ?? null,
+            heldByShopifyId: holder?.shopifyId ?? null,
+          },
+          'local row holds a phone Shopify assigned elsewhere — dropping it for this signup',
+        );
         return prisma()
           .customer.upsert({
             where: { email: input.email },
