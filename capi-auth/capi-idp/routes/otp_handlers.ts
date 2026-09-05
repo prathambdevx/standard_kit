@@ -246,7 +246,9 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
       shopifyId: shopifyCustomer.id,
       name: `${body.firstName} ${body.lastName}`.trim(),
       email: shopifyCustomer.email ?? email,
-      phone: phone ?? null,
+      // Shopify's stored value, not the typed one — it normalises the number and
+      // keeps none at all when it rejects it, so trusting our input drifts the row.
+      phone: shopifyCustomer.phone ?? null,
     });
   } catch (err) {
     try {

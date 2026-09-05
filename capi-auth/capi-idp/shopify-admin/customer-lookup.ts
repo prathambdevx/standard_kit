@@ -1,6 +1,6 @@
 // Phone-first customer resolution against Shopify Admin — the lookup a
-// verified OTP hands off to. Measured live at roughly 3 GraphQL rate-limit
-// points per call, comfortably inside Shopify Plus's bucket for typical traffic.
+// verified OTP hands off to. Measured live at 1 GraphQL rate-limit point per
+// call, comfortably inside Shopify Plus's bucket for typical traffic.
 import { shopifyAdminGraphQL } from '@devxcommerce/bff-core';
 
 // phone/firstName/lastName are carried so the caller can tell a COMPLETE profile
@@ -15,35 +15,40 @@ export type AdminCustomer = {
   name: string;
 };
 
-type CustomersQueryData = {
-  customers: {
-    nodes: Array<{
-      id: string;
-      firstName: string | null;
-      lastName: string | null;
-      email: string | null;
-      phone: string | null;
-    }>;
-  };
+// customerByIdentifier resolves an identifier to the customer it BELONGS to.
+// A `customers(query:)` search matches the identifier anywhere on the record — a
+// saved ADDRESS phone included — so it can return a stranger who merely shipped
+// to that number, and a verified OTP then opens a session on THEIR account.
+// That is not hypothetical: it happened in production (BSC, 2026-09-05).
+type CustomerByIdentifierData = {
+  customerByIdentifier: {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+    email: string | null;
+    phone: string | null;
+  } | null;
 };
 
 const FIND_BY_PHONE_QUERY = `
-  query FindCustomerByPhone($q: String!) {
-    customers(first: 1, query: $q) {
-      nodes { id firstName lastName email phone }
+  query FindCustomerByPhone($phone: String!) {
+    customerByIdentifier(identifier: { phoneNumber: $phone }) {
+      id firstName lastName email phone
     }
   }
 `;
 
 const FIND_BY_EMAIL_QUERY = `
-  query FindCustomerByEmail($q: String!) {
-    customers(first: 1, query: $q) {
-      nodes { id firstName lastName email phone }
+  query FindCustomerByEmail($email: String!) {
+    customerByIdentifier(identifier: { emailAddress: $email }) {
+      id firstName lastName email phone
     }
   }
 `;
 
-function toAdminCustomer(node: CustomersQueryData['customers']['nodes'][number]): AdminCustomer {
+function toAdminCustomer(
+  node: NonNullable<CustomerByIdentifierData['customerByIdentifier']>,
+): AdminCustomer {
   return {
     id: node.id,
     email: node.email,
@@ -55,23 +60,17 @@ function toAdminCustomer(node: CustomersQueryData['customers']['nodes'][number])
 }
 
 /** Email counterpart of findCustomerByPhone — the email OTP channel verifies an
- *  address, which the phone query can never match. */
+ *  address, which the phone lookup can never match. Matched case-insensitively. */
 export async function findCustomerByEmail(email: string): Promise<AdminCustomer | null> {
-  // Quoted for the same reason as the phone query: an address contains "@" and
-  // "." which Shopify's search syntax would otherwise tokenize.
-  const data = await shopifyAdminGraphQL<CustomersQueryData>(FIND_BY_EMAIL_QUERY, {
-    q: `email:"${email}"`,
-  });
-  const node = data.customers.nodes[0];
+  const data = await shopifyAdminGraphQL<CustomerByIdentifierData>(FIND_BY_EMAIL_QUERY, { email });
+  const node = data.customerByIdentifier;
   return node ? toAdminCustomer(node) : null;
 }
 
 export async function findCustomerByPhone(phoneE164: string): Promise<AdminCustomer | null> {
-  // Quoted — phoneE164 always starts with "+", which Shopify's search syntax
-  // otherwise reads as a query connective, not part of the literal value.
-  const data = await shopifyAdminGraphQL<CustomersQueryData>(FIND_BY_PHONE_QUERY, {
-    q: `phone:"${phoneE164}"`,
+  const data = await shopifyAdminGraphQL<CustomerByIdentifierData>(FIND_BY_PHONE_QUERY, {
+    phone: phoneE164,
   });
-  const node = data.customers.nodes[0];
+  const node = data.customerByIdentifier;
   return node ? toAdminCustomer(node) : null;
 }

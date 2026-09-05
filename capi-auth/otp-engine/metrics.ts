@@ -19,7 +19,14 @@ export function recordOtpMetric(event: OtpMetricEvent, fields: Record<string, un
 // Email OTP events carry the recipient address so an admin delivery-log view can
 // show it; SMS events deliberately do not — a phone number in application logs
 // is PII you rarely need there, and an SMS vendor's own logs already give
-// support that view. Adjust if your own vendor does not.
+// support that view.
+//
+// Adjust if your vendor's logs are not REACHABLE during an incident, which is
+// the case worth checking rather than whether they exist: BSC's are IP-allowlisted
+// to the server, so an engineer debugging from a laptop gets a 401 and a phone
+// login has no identifier to search by at all. Returning `{ identifier: username }`
+// unconditionally fixes that, at the cost of PII in logs and in any alert channel
+// they fan out to.
 export function identifierField(channel: string, username: string): Record<string, unknown> {
   return channel === 'email' ? { identifier: username } : {};
 }

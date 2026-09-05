@@ -8,7 +8,9 @@ import {
   UpstreamError,
 } from '@devxcommerce/bff-core';
 
-export type NewShopifyCustomer = { id: string; email: string | null };
+// phone is what Shopify actually STORED, which is not always what we sent — it
+// normalises the number, and silently keeps none when it rejects the value.
+export type NewShopifyCustomer = { id: string; email: string | null; phone: string | null };
 
 // acceptEmailMarketing/acceptSmsMarketing mirror your own signup form's
 // consent checkboxes — map them onto Shopify's nested consent input shape below.
@@ -44,7 +46,7 @@ type ShopifyCustomerInput = {
 
 type CustomerCreateData = {
   customerCreate: {
-    customer: { id: string; email: string | null } | null;
+    customer: { id: string; email: string | null; phone: string | null } | null;
     // customerCreate's userErrors resolve to the plain `UserError` type, which
     // has only field/message — no `code`. Querying `code` here previously made
     // Shopify reject the WHOLE mutation at schema-validation time (undefinedField),
@@ -56,7 +58,7 @@ type CustomerCreateData = {
 export const CREATE_CUSTOMER_MUTATION = `
   mutation CreateCustomer($input: CustomerInput!) {
     customerCreate(input: $input) {
-      customer { id email }
+      customer { id email phone }
       userErrors { field message }
     }
   }
