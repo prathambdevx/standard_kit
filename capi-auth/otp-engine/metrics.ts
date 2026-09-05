@@ -16,17 +16,15 @@ export function recordOtpMetric(event: OtpMetricEvent, fields: Record<string, un
   log.info({ metric: event, ...fields }, `[otp metric] ${event}`);
 }
 
-// Email OTP events carry the recipient address so an admin delivery-log view can
-// show it; SMS events deliberately do not — a phone number in application logs
-// is PII you rarely need there, and an SMS vendor's own logs already give
-// support that view.
+// Both channels carry the recipient, so a login can be traced by the identifier
+// the customer actually used. SMS was omitted originally on the reasoning that
+// the vendor's own logs cover it — but those are typically IP-allowlisted to the
+// server, so an engineer debugging from a laptop gets a 401 and a phone login has
+// nothing to search by at all.
 //
-// Adjust if your vendor's logs are not REACHABLE during an incident, which is
-// the case worth checking rather than whether they exist: BSC's are IP-allowlisted
-// to the server, so an engineer debugging from a laptop gets a 401 and a phone
-// login has no identifier to search by at all. Returning `{ identifier: username }`
-// unconditionally fixes that, at the cost of PII in logs and in any alert channel
-// they fan out to.
-export function identifierField(channel: string, username: string): Record<string, unknown> {
-  return channel === 'email' ? { identifier: username } : {};
+// The tradeoff is real: this puts a phone number in application logs and in any
+// alert channel they fan out to. Drop the mobile branch if your vendor's logs are
+// genuinely reachable during an incident, or if PII in logs is not acceptable to you.
+export function identifierField(_channel: string, username: string): Record<string, unknown> {
+  return { identifier: username };
 }
