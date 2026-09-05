@@ -3,6 +3,7 @@
 // infra exists yet; this just makes sure the data is already flowing by the
 // time a dashboard is built, instead of starting from zero.
 import { log } from '@devxcommerce/bff-core';
+import { requestContext } from '../lib/request-context';
 
 export type OtpMetricEvent =
   | 'otp_sent'
@@ -12,8 +13,15 @@ export type OtpMetricEvent =
   | 'otp_verify_locked'
   | 'otp_verify_expired';
 
+// request_id joins these to the error that followed in the SAME request — a
+// verify can succeed and the session still fail (customer_not_found), and
+// without it the two records can only be matched by guessing on timestamp.
 export function recordOtpMetric(event: OtpMetricEvent, fields: Record<string, unknown> = {}): void {
-  log.info({ metric: event, ...fields }, `[otp metric] ${event}`);
+  const ctx = requestContext();
+  log.info(
+    { metric: event, ...(ctx ? { request_id: ctx.requestId } : {}), ...fields },
+    `[otp metric] ${event}`,
+  );
 }
 
 // Both channels carry the recipient, so a login can be traced by the identifier

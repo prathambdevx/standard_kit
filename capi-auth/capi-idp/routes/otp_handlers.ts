@@ -295,10 +295,17 @@ function interactionMatchesThisLogin(
 // Completes a genuine pending interaction (Path B), else falls to a silent CAPI handoff (Path A).
 async function respondWithCustomerSession(
   c: Context,
-  customer: { shopifyId: string | null; email: string },
+  customer: { id?: string; shopifyId: string | null; email: string },
   otpChallengeCreatedAt: Date | null,
 ): Promise<Response> {
   if (!customer.shopifyId) {
+    // The customer proved their identity and still cannot be let in. The thrown
+    // error carries only a code, so name WHO it happened to — otherwise this is
+    // only answerable by joining on request_id from the OTP event.
+    log.warn(
+      { code: 'customer_not_found', customerId: customer.id ?? null, email: customer.email },
+      'verified customer has no Shopify id — cannot issue a session',
+    );
     throw new NotFoundError('No Shopify customer for this phone', { code: 'customer_not_found' });
   }
   const shopifyCustomer = { shopifyId: customer.shopifyId, email: customer.email };
