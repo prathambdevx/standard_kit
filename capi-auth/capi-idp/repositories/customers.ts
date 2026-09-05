@@ -52,10 +52,21 @@ export async function findOrLazyFillByEmail(
   // A cached row with no shopifyId gets patched in place by id — not the
   // upsert-by-key path below, which could miss it on a case mismatch.
   if (cached) {
+    const wasOrphaned = !cached.shopifyId;
     const customer = await prisma()
       .customer.update({
         where: { id: cached.id },
         data: { shopifyId: admin.id, name: admin.name, phone: admin.phone },
+      })
+      .then((updated) => {
+        // Only after the update actually lands — the catch below can still
+        // hand back a DIFFERENT (canonical) row on a shopifyId collision.
+        if (wasOrphaned) {
+          console.info(
+            JSON.stringify({ code: 'shopify_id_backfilled', customerId: cached.id, via: 'email' }),
+          );
+        }
+        return updated;
       })
       .catch(async (err) => {
         // shopifyId is @unique — another row may already own it.
@@ -141,6 +152,14 @@ export async function findOrLazyFillByPhone(
       .customer.update({
         where: { id: cached.id },
         data: { shopifyId: admin.id, name: admin.name, email, phone: phoneE164 },
+      })
+      .then((updated) => {
+        // Only after the update actually lands — the catch below falls back to
+        // the still-unlinked cached row on a collision, which is not a recovery.
+        console.info(
+          JSON.stringify({ code: 'shopify_id_backfilled', customerId: cached.id, via: 'phone' }),
+        );
+        return updated;
       })
       .catch((err) => {
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
