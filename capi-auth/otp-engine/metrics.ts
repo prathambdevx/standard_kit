@@ -2,6 +2,7 @@
 // to feed later (OTPs sent, verify success rate, time-to-verify). No metrics
 // infra exists yet; this just makes sure the data is already flowing by the
 // time a dashboard is built, instead of starting from zero.
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { log } from '@devxcommerce/bff-core';
 import { requestContext } from '../lib/request-context';
 
@@ -11,15 +12,27 @@ export type OtpMetricEvent =
   | 'otp_verify_success'
   | 'otp_verify_failed'
   | 'otp_verify_locked'
-  | 'otp_verify_expired';
+  | 'otp_verify_expired'
+  | 'otp_unverified_would_lock'
+  | 'otp_unverified_locked';
+
+// Per-request fields (request id, login trace id, caller) that handlers set once, so every
+// metric line in the request carries them without threading them through the engine.
+const requestFields = new AsyncLocalStorage<Record<string, unknown>>();
+
+/** Adds fields to every metric recorded for the rest of this request. */
+export function setOtpMetricContext(fields: Record<string, unknown>): void {
+  requestFields.enterWith({ ...requestFields.getStore(), ...fields });
+}
 
 // request_id joins these to the error that followed in the SAME request — a
 // verify can succeed and the session still fail (customer_not_found), and
 // without it the two records can only be matched by guessing on timestamp.
 export function recordOtpMetric(event: OtpMetricEvent, fields: Record<string, unknown> = {}): void {
   const ctx = requestContext();
+  // requestFields spread last so a caller cannot overwrite the correlation values.
   log.info(
-    { metric: event, ...(ctx ? { request_id: ctx.requestId } : {}), ...fields },
+    { metric: event, ...(ctx ? { request_id: ctx.requestId } : {}), ...fields, ...requestFields.getStore() },
     `[otp metric] ${event}`,
   );
 }

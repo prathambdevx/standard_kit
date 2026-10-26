@@ -65,7 +65,8 @@ export async function createOtp(
   const expiresAt = new Date(Date.now() + OTP_TTL_MS);
   await createChallenge({ otpId, username, channel, codeHash: hash(code), expiresAt });
   await resetAttempts(otpId, expiresAt);
-  recordOtpMetric('otp_sent', { channel, ...identifierField(channel, username) });
+  // otpId joins this send to the verify it eventually produces.
+  recordOtpMetric('otp_sent', { otpId, channel, ...identifierField(channel, username) });
   return { otpId, code };
 }
 
@@ -103,6 +104,7 @@ export async function resendOtp(otpId: string, ip: string): Promise<ResendResult
   await resetChallenge(otpId, hash(code), expiresAt);
   await resetAttempts(otpId, expiresAt);
   recordOtpMetric('otp_resent', {
+    otpId,
     channel: existing.channel,
     ...identifierField(existing.channel, existing.username),
   });
