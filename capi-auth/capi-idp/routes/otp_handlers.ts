@@ -1,19 +1,10 @@
 // ── OTP: our own API, follows the standard {data,meta}/{error,meta} envelope ──
-// RIGHTMOST x-forwarded-for entry, not the leftmost. The ALB APPENDS the address
-// it received the connection from, so the last entry is the only one a caller
-// cannot forge — everything to its left is client-supplied. Reading the leftmost
-// let anyone mint a fresh per-IP rate-limit bucket per request by sending their
-// own header, which is the only cap standing between a caller and unbounded SMS
-// spend across many different phone numbers.
-//
-// Deliberately NOT shared with modules/glood/handlers.ts's shopperIp: that one
-// feeds a recommendation vendor, where a spoofed value costs nothing. This one
-// is a security control.
 import { randomUUID } from 'node:crypto';
 import { log, NotFoundError, TooManyRequestsError, ValidationError } from '@devxcommerce/bff-core';
 import type { Context } from 'hono';
 import { deleteCookie, getCookie } from 'hono/cookie';
 import { env } from '../../config/env';
+import { clientIp } from '../client_ip';
 import { checkEmailDomain, isWellFormedEmail } from '../email-domain';
 import { parseBody } from '../../lib/parse-body';
 import { ok } from '../../lib/response';
@@ -41,11 +32,6 @@ import {
 import { updateShopifyCustomer } from '../../services/shopify/admin/customer-update';
 import { otpDetailsSchema, otpResendSchema, otpSendSchema, otpVerifySchema } from './schemas';
 import { bffBaseUrl, INTERACTION_COOKIE, missingCapiConfig } from './shared';
-function clientIp(c: Context): string {
-  const parts = c.req.header('x-forwarded-for')?.split(',') ?? [];
-  const last = parts.at(-1)?.trim();
-  return last && /^[0-9a-f.:]+$/i.test(last) ? last : 'unknown';
-}
 
 // Sends an OTP to the customer's phone or email address.
 export async function sendOtpHandler(c: Context): Promise<Response> {
