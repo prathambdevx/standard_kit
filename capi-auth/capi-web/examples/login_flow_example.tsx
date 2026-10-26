@@ -7,9 +7,10 @@
 // cooldowns, per-channel copy, and analytics — start here, add only what you need.
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { exchangeCapiClaim } from '../capi_callback';
 import type { AuthStores } from '../commerce';
+import { stashLoginRedirect, takeLoginRedirect } from '../login_redirect';
 
 type Step = 'credentials' | 'verify' | 'details' | 'done';
 
@@ -37,6 +38,13 @@ export function useLoginFlowExample(otp: OtpClient, auth: AuthStores) {
   const [step, setStep] = useState<Step>('credentials');
   const [otpId, setOtpId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [next, setNext] = useState<string | null>(null);
+
+  // Survives the full-page Shopify walk; no ?redirect= clears any stale one.
+  // Login page only: never call this on the callback page, or it wipes the target first.
+  useEffect(() => {
+    stashLoginRedirect(new URLSearchParams(window.location.search).get('redirect'));
+  }, []);
 
   const sendCode = async (username: string, channel: 'phone' | 'email') => {
     setError(null);
@@ -54,6 +62,8 @@ export function useLoginFlowExample(otp: OtpClient, auth: AuthStores) {
       capiSession: auth.capiSession,
     });
     setStep(result.ok ? 'done' : 'credentials');
+    // Where to send the customer: the stashed ?redirect=, else your default page.
+    if (result.ok) setNext(takeLoginRedirect());
     if (!result.ok) setError('Login failed — try again.');
   };
 
@@ -75,5 +85,5 @@ export function useLoginFlowExample(otp: OtpClient, auth: AuthStores) {
     await finishWithClaim(claimToken, bindSecret);
   };
 
-  return { step, error, sendCode, verifyCode, submitDetails };
+  return { step, error, next, sendCode, verifyCode, submitDetails };
 }
