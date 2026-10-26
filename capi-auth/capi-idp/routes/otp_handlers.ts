@@ -236,7 +236,7 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
       ? await findCustomerByPhone(challenge.username)
       : await findCustomerByEmail(challenge.username);
 
-  let shopifyCustomer: { id: string; email: string | null };
+  let shopifyCustomer: { id: string; email: string | null; phone: string | null };
   try {
     shopifyCustomer = existing
       ? await updateShopifyCustomer({
