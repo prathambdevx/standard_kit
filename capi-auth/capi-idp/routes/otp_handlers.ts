@@ -30,13 +30,15 @@ import {
   findCustomerByPhone,
 } from '../../services/shopify/admin/customer-lookup';
 import { updateShopifyCustomer } from '../../services/shopify/admin/customer-update';
-import { mintLoginTraceId, setLoginTraceId } from './login_trace';
+import { mintLoginTraceId } from './login_trace';
+import { noteOtpCaller } from './otp_caller';
 import { otpDetailsSchema, otpResendSchema, otpSendSchema, otpVerifySchema } from './schemas';
 import { bffBaseUrl, INTERACTION_COOKIE, missingCapiConfig } from './shared';
 
 // Sends an OTP to the customer's phone or email address.
 export async function sendOtpHandler(c: Context): Promise<Response> {
   const body = await parseBody(c, otpSendSchema);
+  noteOtpCaller(c);
   try {
     await checkOtpSendRateLimit(body.username, clientIp(c));
   } catch (err) {
@@ -55,6 +57,7 @@ export async function sendOtpHandler(c: Context): Promise<Response> {
 // and the same per-phone/IP send caps as the initial send.
 export async function resendOtpHandler(c: Context): Promise<Response> {
   const body = await parseBody(c, otpResendSchema);
+  noteOtpCaller(c);
   const result = await resendOtp(body.otpId, clientIp(c));
   if ('error' in result) {
     log.warn({ otpId: body.otpId, reason: result.error }, 'otp/resend refused');
@@ -73,7 +76,7 @@ export async function verifyOtpHandler(c: Context): Promise<Response> {
   const body = await parseBody(c, otpVerifySchema);
   // Minted before anything that can fail, so a rate-limit or verify rejection carries it too.
   const loginTraceId = mintLoginTraceId();
-  setLoginTraceId(c, loginTraceId);
+  noteOtpCaller(c, loginTraceId);
   // Caps guesses per network. claimAttempt caps them per challenge, which an
   // attacker sidesteps by requesting a fresh challenge for each new budget.
   await checkOtpVerifyRateLimit(clientIp(c));
@@ -134,7 +137,7 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
   const body = await parseBody(c, otpDetailsSchema);
   // Signup is two requests, so this one mints its own trace; otpId joins it to the verify.
   const loginTraceId = mintLoginTraceId();
-  setLoginTraceId(c, loginTraceId);
+  noteOtpCaller(c, loginTraceId);
   const challenge = await getChallenge(body.otpId);
   log.info(
     {
