@@ -14,7 +14,12 @@ import {
 } from '../../repositories/otp_challenges';
 import { sendOtpEmail } from './email';
 import { identifierField, recordOtpMetric } from './metrics';
-import { checkOtpSendRateLimit } from './rate_limit';
+import {
+  checkOtpSendRateLimit,
+  checkOtpUnverifiedBreaker,
+  clearOtpUnverified,
+  noteOtpSentUnverified,
+} from './rate_limit';
 import { sendOtpSms } from './sms';
 
 const OTP_TTL_MS = 5 * 60 * 1000;
@@ -60,8 +65,12 @@ export async function createOtp(
   // that throws must leave no challenge row behind — the row otherwise sits
   // unclaimed until its resendOtp-driven overwrite or the eventual signup
   // deleteChallenge, describing a code the customer never received.
+  // If you add a fixed test-identity branch that skips the real send, keep it OUT of the breaker:
+  // it never costs an SMS, so counting it would only ever lock your QA number.
+  await checkOtpUnverifiedBreaker(username);
   if (channel === 'mobile') await sendOtpSms(username, code);
   if (channel === 'email') await sendOtpEmail(username, code);
+  await noteOtpSentUnverified(username);
   const expiresAt = new Date(Date.now() + OTP_TTL_MS);
   await createChallenge({ otpId, username, channel, codeHash: hash(code), expiresAt });
   await resetAttempts(otpId, expiresAt);
@@ -98,8 +107,10 @@ export async function resendOtp(otpId: string, ip: string): Promise<ResendResult
   // Send first, then overwrite. The other order was a hard lockout: resetChallenge
   // kills the code the customer can still see in their inbox, so a send that then
   // throws leaves them with one dead code and one never delivered.
+  await checkOtpUnverifiedBreaker(existing.username);
   if (existing.channel === 'mobile') await sendOtpSms(existing.username, code);
   if (existing.channel === 'email') await sendOtpEmail(existing.username, code);
+  await noteOtpSentUnverified(existing.username);
   const expiresAt = new Date(Date.now() + OTP_TTL_MS);
   await resetChallenge(otpId, hash(code), expiresAt);
   await resetAttempts(otpId, expiresAt);
@@ -150,6 +161,7 @@ export async function verifyOtp(otpId: string, code: string): Promise<VerifyResu
   // Consume atomically: two concurrent verifies of the SAME correct code both
   // passed `challenge.consumed` above, and would each mint a session.
   if (!(await markConsumed(otpId))) return { ok: false, error: 'otp_not_found' };
+  await clearOtpUnverified(challenge.username);
   // createdAt is the ORIGINAL send time — resendOtp doesn't touch it, so a
   // resend-before-verify inflates this beyond the actual time since the code
   // the customer typed was sent.
