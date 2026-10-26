@@ -38,6 +38,7 @@ Both end with the customer holding a real Shopify session; they differ only in *
 | **claim token** — `capi_claim_<uuid>` | Short-lived single-use stand-in for the real session id, so the id never rides in a redirect URL. Traded in a JSON body via `/capi/claim`. 5 min TTL. |
 | **CAPI session id** — `capi_sess_<uuid>` | The real bearer credential, long-lived (no TTL — it lasts as long as Shopify honours the refresh token). Wraps Shopify's access token, refresh token and `idToken`. Only its sha256 is stored. |
 | `idToken` | Shopify's id_token for the session. Required as `id_token_hint` on logout — Shopify rejects an end-session request without it. |
+| `loginTraceId` (`trace_<uuid>`) | Minted at `otp/verify` (and again at `otp/details`, which is its own request). Carried on the silent grant, IdP auth code, `PendingAuth` and claim token, and logged on every refusal. One grep finds a whole login. Logged on OTP metrics as `login_trace_id`. |
 | `grantToken` | The silent-grant token, carried inside the pending record. Still unconsumed at callback time means Shopify skipped your IdP, which triggers the identity re-check. |
 
 ## Browser binding (anti-relay)
@@ -60,12 +61,15 @@ Both end with the customer holding a real Shopify session; they differ only in *
 | `VERIFY_IP_HOURLY_MAX` | 30 | Verify attempts per IP — bounds an attacker who keeps requesting fresh challenges. |
 | `DETAILS_SUBMISSION_WINDOW_MS` | 5 min | How long after verifying you can still submit signup details. |
 | `MAX_INTERACTION_TO_OTP_SEND_GAP_MS` | 30 s | Max gap between an `/authorize` hit and the OTP send it belongs to, so a stale interaction isn't treated as Path B. |
+| `OTP_UNVERIFIED_SEND_MAX` | 3 | Sends to one number with no verify before the unverified-send breaker trips. |
+| `OTP_UNVERIFIED_TTL_SECONDS` | 24 h | Window for that count, from the first unverified send. |
 | `SILENT_GRANT_COOKIE_MAX_AGE_SECONDS` | 5 min | Cookie lifetime; must match `SILENT_GRANT_TTL_SECONDS` in the store. |
 
 ## Env vars
 
 | Name | What it does |
 | --- | --- |
+| `OTP_UNVERIFIED_BREAKER_MODE` | `off` \| `log` \| `enforce`, default `log`. `log` records `otp_unverified_would_lock` and refuses nothing. |
 | `OTP_HASH_SECRET` | HMAC key for hashing OTP codes at rest. Rotating it invalidates every in-flight code. |
 | `IDP_CLIENT_ID` / `_SECRET` | Credentials **Shopify** uses to authenticate to your IdP. |
 | `IDP_SIGNING_KEY` | RSA key your IdP signs id/access tokens with; published at `/idp/jwks`. |
