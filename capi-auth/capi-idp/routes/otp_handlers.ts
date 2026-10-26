@@ -30,13 +30,23 @@ import {
   findCustomerByPhone,
 } from '../../services/shopify/admin/customer-lookup';
 import { updateShopifyCustomer } from '../../services/shopify/admin/customer-update';
+import { mintLoginTraceId, setLoginTraceId } from './login_trace';
 import { otpDetailsSchema, otpResendSchema, otpSendSchema, otpVerifySchema } from './schemas';
 import { bffBaseUrl, INTERACTION_COOKIE, missingCapiConfig } from './shared';
 
 // Sends an OTP to the customer's phone or email address.
 export async function sendOtpHandler(c: Context): Promise<Response> {
   const body = await parseBody(c, otpSendSchema);
-  await checkOtpSendRateLimit(body.username, clientIp(c));
+  try {
+    await checkOtpSendRateLimit(body.username, clientIp(c));
+  } catch (err) {
+    // The thrown 429 carries no identifier, which is what an abuse investigation needs.
+    log.warn(
+      { reason: 'send_rate_limited', identifier: body.username, ip: clientIp(c) },
+      'otp/send refused: rate limit',
+    );
+    throw err;
+  }
   const { otpId } = await createOtp(body.username, body.channel);
   return ok(c, { otpId });
 }
@@ -46,7 +56,10 @@ export async function sendOtpHandler(c: Context): Promise<Response> {
 export async function resendOtpHandler(c: Context): Promise<Response> {
   const body = await parseBody(c, otpResendSchema);
   const result = await resendOtp(body.otpId, clientIp(c));
-  if ('error' in result) throw otpErrorToAppError(result.error);
+  if ('error' in result) {
+    log.warn({ otpId: body.otpId, reason: result.error }, 'otp/resend refused');
+    throw otpErrorToAppError(result.error);
+  }
   return ok(c, { otpId: result.otpId });
 }
 
@@ -58,6 +71,9 @@ export async function resendOtpHandler(c: Context): Promise<Response> {
 // interaction; e.g. a standalone OTP check).
 export async function verifyOtpHandler(c: Context): Promise<Response> {
   const body = await parseBody(c, otpVerifySchema);
+  // Minted before anything that can fail, so a rate-limit or verify rejection carries it too.
+  const loginTraceId = mintLoginTraceId();
+  setLoginTraceId(c, loginTraceId);
   // Caps guesses per network. claimAttempt caps them per challenge, which an
   // attacker sidesteps by requesting a fresh challenge for each new budget.
   await checkOtpVerifyRateLimit(clientIp(c));
@@ -77,7 +93,7 @@ export async function verifyOtpHandler(c: Context): Promise<Response> {
       ? await findOrLazyFillByEmail(result.username)
       : await findOrLazyFillByPhone(result.username);
   if (lookup.status === 'ready') {
-    return respondWithCustomerSession(c, lookup.customer, challenge?.createdAt ?? null);
+    return respondWithCustomerSession(c, lookup.customer, challenge?.createdAt ?? null, loginTraceId);
   }
 
   // Two cases land here and both go through the details form: a genuinely new
@@ -116,11 +132,34 @@ const DETAILS_SUBMISSION_WINDOW_MS = 5 * 60 * 1000;
 // customer's verify — same response shape either way.
 export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
   const body = await parseBody(c, otpDetailsSchema);
+  // Signup is two requests, so this one mints its own trace; otpId joins it to the verify.
+  const loginTraceId = mintLoginTraceId();
+  setLoginTraceId(c, loginTraceId);
   const challenge = await getChallenge(body.otpId);
+  log.info(
+    {
+      otpId: body.otpId,
+      identifier: challenge?.username ?? null,
+      channel: challenge?.channel ?? null,
+    },
+    'otp/details: signup submission received',
+  );
   if (!challenge?.consumed) {
+    log.warn(
+      { otpId: body.otpId, reason: challenge ? 'challenge_not_verified' : 'challenge_missing' },
+      'otp/details refused: no verified challenge for this id',
+    );
     throw new NotFoundError('OTP was not verified for this id', { code: 'otp_not_verified' });
   }
   if (Date.now() - challenge.updatedAt.getTime() > DETAILS_SUBMISSION_WINDOW_MS) {
+    log.warn(
+      {
+        otpId: body.otpId,
+        identifier: challenge.username,
+        ageMs: Date.now() - challenge.updatedAt.getTime(),
+      },
+      'otp/details refused: signup window expired',
+    );
     throw new ValidationError('Signup window expired — verify again', {
       code: 'otp_details_expired',
     });
@@ -141,6 +180,10 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
   // Only reachable on the mobile channel, where verify returned emailRequired:true
   // — a 400 rather than a crash if a client ignores that flag.
   if (!email) {
+    log.warn(
+      { otpId: body.otpId, identifier: challenge.username, channel: challenge.channel },
+      'otp/details refused: no e-mail supplied on a mobile-channel signup',
+    );
     throw new ValidationError('An e-mail address is required to finish signup', {
       code: 'otp_details_email_missing',
     });
@@ -148,6 +191,14 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
   // Only 'undeliverable' (confirmed no MX records) rejects — a slow/unreachable
   // resolver must never block a real signup over a DNS hiccup.
   if ((await checkEmailDomain(email)) === 'undeliverable') {
+    log.warn(
+      {
+        otpId: body.otpId,
+        identifier: challenge.username,
+        emailDomain: email.split('@')[1] ?? null,
+      },
+      'otp/details refused: e-mail domain has no MX records',
+    );
     throw new ValidationError('Email OTP requires a valid email address', {
       code: 'invalid_payload',
     });
@@ -164,6 +215,11 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
   // the loser gets a clean 404 rather than racing an external API.
   const claimed = await claimChallengeForSignup(body.otpId);
   if (!claimed) {
+    // Lost the atomic claim: a concurrent submit for the same challenge won.
+    log.warn(
+      { otpId: body.otpId, identifier: challenge.username, reason: 'signup_claim_lost' },
+      'otp/details refused: another submit already claimed this challenge',
+    );
     throw new NotFoundError('OTP was not verified for this id', { code: 'otp_not_verified' });
   }
   // Create vs. patch is decided HERE, by re-resolving the identity against
@@ -261,7 +317,7 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
   } catch (deleteErr) {
     log.warn({ err: deleteErr, otpId: body.otpId }, 'failed to delete spent signup challenge');
   }
-  return respondWithCustomerSession(c, customer, challenge.createdAt);
+  return respondWithCustomerSession(c, customer, challenge.createdAt, loginTraceId);
 }
 
 // Max gap between the /authorize hit and the OTP send it's for (Bug 22a #2) — a known, accepted limit, not solvable by cookie+timing alone.
@@ -279,10 +335,21 @@ function interactionMatchesThisLogin(
 // Completes a genuine pending interaction (Path B), else falls to a silent CAPI handoff (Path A).
 async function respondWithCustomerSession(
   c: Context,
-  customer: { shopifyId: string | null; email: string },
+  customer: { id?: string; shopifyId: string | null; email: string },
   otpChallengeCreatedAt: Date | null,
+  loginTraceId: string,
 ): Promise<Response> {
   if (!customer.shopifyId) {
+    // The customer proved who they are and still cannot get in; the thrown error carries only a code.
+    log.warn(
+      {
+        code: 'customer_not_found',
+        customerId: customer.id ?? null,
+        email: customer.email,
+        loginTraceId,
+      },
+      'verified customer has no Shopify id: cannot issue a session',
+    );
     throw new NotFoundError('No Shopify customer for this phone', { code: 'customer_not_found' });
   }
   const shopifyCustomer = { shopifyId: customer.shopifyId, email: customer.email };
@@ -294,18 +361,26 @@ async function respondWithCustomerSession(
       // Stale/orphaned — don't touch the row (it may still be legitimately
       // in flight for whichever browser it actually belongs to; it'll simply
       // TTL out on its own), just stop treating THIS login as Path B.
+      log.warn(
+        { loginTraceId, interactionId },
+        'otp/verify: interaction cookie did not belong to this login: falling back to the silent CAPI handoff',
+      );
       deleteCookie(c, INTERACTION_COOKIE, { path: '/' });
     } else {
-      const completed = await completeInteraction(interactionId, shopifyCustomer);
+      const completed = await completeInteraction(interactionId, shopifyCustomer, loginTraceId);
       deleteCookie(c, INTERACTION_COOKIE, { path: '/' });
       if (!completed.ok) {
+        log.warn(
+          { loginTraceId, interactionId, error: completed.error },
+          'otp/verify: pending IdP interaction could not be completed',
+        );
         throw new NotFoundError('Login session expired', { code: 'idp_interaction_expired' });
       }
       return ok(c, { status: 'authenticated' as const, redirectUrl: completed.redirectUrl });
     }
   }
 
-  return respondWithSilentCapiHandoff(c, shopifyCustomer);
+  return respondWithSilentCapiHandoff(c, shopifyCustomer, loginTraceId);
 }
 
 // Path A: stashes a single-use grant and hands back a URL that kicks off the
@@ -319,12 +394,17 @@ async function respondWithCustomerSession(
 async function respondWithSilentCapiHandoff(
   c: Context,
   customer: { shopifyId: string; email: string },
+  loginTraceId: string,
 ): Promise<Response> {
   const { CAPI_AUTHORIZE_ENDPOINT, CAPI_REDIRECT_URI, CAPI_SCOPE, CAPI_CLIENT_ID } = env;
   if (missingCapiConfig(CAPI_AUTHORIZE_ENDPOINT, CAPI_REDIRECT_URI, CAPI_SCOPE, CAPI_CLIENT_ID)) {
     // CAPI isn't wired up in this environment yet — the old, plain outcome
     // (verified on our own site, no Shopify session) rather than a handoff
     // URL that would 502.
+    log.warn(
+      { loginTraceId },
+      'otp/verify: CAPI is not configured in this environment: returning verified with no handoff url, so no session can be minted',
+    );
     return ok(c, { status: 'verified' as const });
   }
 
@@ -332,6 +412,7 @@ async function respondWithSilentCapiHandoff(
   await putSilentGrant(token, {
     ...customer,
     bindHash: c.req.header('x-bsc-bind-hash') ?? undefined,
+    loginTraceId,
   });
 
   return ok(c, {

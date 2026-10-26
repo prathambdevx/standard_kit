@@ -161,6 +161,7 @@ export type CompleteResult = { ok: true; redirectUrl: string } | { ok: false; er
 export async function completeInteraction(
   interactionId: string | undefined,
   customer: ResolvedCustomer,
+  loginTraceId?: string,
 ): Promise<CompleteResult> {
   const interaction = await getInteraction(interactionId);
   if (!interaction) return { ok: false, error: 'no_interaction' };
@@ -175,6 +176,7 @@ export async function completeInteraction(
     codeChallenge: interaction.codeChallenge ?? undefined,
     sub,
     email: customer.email,
+    loginTraceId,
   });
   await deleteInteraction(interaction.id);
 
@@ -255,13 +257,28 @@ export async function exchangeAuthorizationCode(input: {
   redirectUri: string;
   codeVerifier?: string;
   issuer: string;
-}): Promise<{ ok: true; tokens: TokenResponse } | { ok: false; error: string }> {
+}): Promise<
+  { ok: true; tokens: TokenResponse; loginTraceId?: string } | { ok: false; error: string }
+> {
   const rec = await takeCode(input.code);
-  if (!rec) return { ok: false, error: 'invalid_grant' };
+  // All three refusals answer a bare invalid_grant per OAuth, so the reason only
+  // exists in these logs.
+  if (!rec) {
+    log.warn({ reason: 'unknown_or_spent_code' }, 'idp/token: authorization code rejected');
+    return { ok: false, error: 'invalid_grant' };
+  }
   if (rec.redirectUri !== input.redirectUri) {
+    log.warn(
+      { reason: 'redirect_uri_mismatch', loginTraceId: rec.loginTraceId },
+      'idp/token: authorization code rejected',
+    );
     return { ok: false, error: 'invalid_grant' };
   }
   if (rec.codeChallenge && !pkceMatches(rec, input.codeVerifier)) {
+    log.warn(
+      { reason: 'pkce_mismatch', loginTraceId: rec.loginTraceId },
+      'idp/token: authorization code rejected',
+    );
     return { ok: false, error: 'invalid_grant' };
   }
 
@@ -277,6 +294,7 @@ export async function exchangeAuthorizationCode(input: {
 
   return {
     ok: true,
+    ...(rec.loginTraceId ? { loginTraceId: rec.loginTraceId } : {}),
     tokens: {
       access_token,
       id_token,

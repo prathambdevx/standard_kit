@@ -130,11 +130,15 @@ const CLAIM_TOKEN_TTL_SECONDS = 5 * 60;
 
 const claimKey = (token: string) => `capiauth:capi_claim:${token}`;
 
-export async function createClaimToken(sessionId: string, bindHash?: string): Promise<string> {
+export async function createClaimToken(
+  sessionId: string,
+  bindHash?: string,
+  loginTraceId?: string,
+): Promise<string> {
   const token = `capi_claim_${randomUUID()}`;
   await redis().set(
     claimKey(token),
-    JSON.stringify({ sessionId, bindHash }),
+    JSON.stringify({ sessionId, bindHash, loginTraceId }),
     'EX',
     CLAIM_TOKEN_TTL_SECONDS,
   );
@@ -144,6 +148,7 @@ export async function createClaimToken(sessionId: string, bindHash?: string): Pr
 export interface ClaimedSession {
   sessionId: string;
   bindHash?: string; // sha256 of the binding cookie set on the browser that completed the CAPI flow
+  loginTraceId?: string; // carried from PendingAuth, for cross-hop log correlation
 }
 
 // Single-use via Redis's atomic GETDEL. Burning the token even when the caller

@@ -47,12 +47,14 @@ import {
   getCapiSession,
 } from '../../services/capi/session_store';
 import {
+  peekPending,
   peekSilentGrant,
   putSilentGrant,
   takePending,
   takeSilentGrant,
 } from '../../services/idp/session_store';
 import { reportDegradation } from '../../services/upstream-fetch';
+import { setLoginTraceId } from './login_trace';
 import { capiCallbackQuerySchema, capiClaimBodySchema, capiStartQuerySchema } from './schemas';
 import {
   missingCapiConfig,
@@ -128,6 +130,7 @@ export async function startCapiAuthorizeHandler(c: Context): Promise<Response> {
     );
   }
   let grantBindHash: string | undefined;
+  let grantLoginTraceId: string | undefined;
   // grant is only present on the silent-CAPI-handoff path — this request IS
   // the frontend's real top-level navigation to capiHandoffUrl, so a
   // Set-Cookie on THIS response is first-party and actually sticks (unlike
@@ -141,7 +144,14 @@ export async function startCapiAuthorizeHandler(c: Context): Promise<Response> {
   if (grant) {
     const pendingGrant = await peekSilentGrant(grant);
     grantBindHash = pendingGrant?.bindHash;
+    grantLoginTraceId = pendingGrant?.loginTraceId;
+    setLoginTraceId(c, grantLoginTraceId);
     if (!pendingGrant) {
+      // Nothing downstream runs, so without this the login just vanishes here.
+      log.warn(
+        { returnToHost: returnTo ? returnToHostForLog(returnTo) : null },
+        'capi/start: grant is unknown or already expired: sending the customer back to the login page',
+      );
       if (!env.LOGIN_PAGE_URL) {
         throw new ServiceUnavailableError(
           'LOGIN_PAGE_URL is not set — cannot redirect to a login page',
@@ -163,6 +173,10 @@ export async function startCapiAuthorizeHandler(c: Context): Promise<Response> {
 
   const { CAPI_AUTHORIZE_ENDPOINT, CAPI_REDIRECT_URI, CAPI_SCOPE, CAPI_CLIENT_ID } = env;
   if (missingCapiConfig(CAPI_AUTHORIZE_ENDPOINT, CAPI_REDIRECT_URI, CAPI_SCOPE, CAPI_CLIENT_ID)) {
+    log.warn(
+      { loginTraceId: grantLoginTraceId },
+      'capi/start: CAPI is not fully configured in this environment: login cannot proceed',
+    );
     throw new ServiceUnavailableError('CAPI authorize flow is not fully configured', {
       code: 'capi_authorize_unconfigured',
     });
@@ -179,7 +193,7 @@ export async function startCapiAuthorizeHandler(c: Context): Promise<Response> {
       scope: CAPI_SCOPE as string,
       clientId: CAPI_CLIENT_ID as string,
     },
-    { bindHash: grantBindHash, grantToken: grant, returnTo },
+    { bindHash: grantBindHash, grantToken: grant, returnTo, loginTraceId: grantLoginTraceId },
   );
   return c.redirect(authorizeUrl, 302);
 }
@@ -207,6 +221,15 @@ function redirectToLoginAfterFailedCallback(
 export async function capiCallbackHandler(c: Context): Promise<Response> {
   const q = parseQuery(c, capiCallbackQuerySchema);
 
+  // The refusals below run BEFORE the pending record is consumed, so peek first to give them the trace id.
+  if (q.state) {
+    try {
+      setLoginTraceId(c, (await peekPending(q.state))?.loginTraceId);
+    } catch {
+      // Logging only: a Redis blip here must not turn the controlled redirects below into a 5xx.
+    }
+  }
+
   // Shopify sends `error` instead of `code` when the customer denies consent
   // or the flow fails on its side — distinct from a malformed callback.
   if (q.error) {
@@ -218,13 +241,14 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
     });
   }
   if (!q.code || !q.state) {
-    log.warn('CAPI callback hit with no code/state');
+    log.warn({ hasCode: !!q.code, hasState: !!q.state }, 'CAPI callback hit with no code/state');
     const bounce = redirectToLoginAfterFailedCallback(c, 'failed');
     if (bounce) return bounce;
     throw new ValidationError('Missing code or state', { code: 'capi_callback_invalid_query' });
   }
 
   const pending = await takePending(q.state);
+  setLoginTraceId(c, pending?.loginTraceId);
   if (!pending) {
     // Routine, not a fault: a stale tab, a replayed callback, or a handshake that
     // outlived its 10-minute pending TTL all land here.
@@ -277,7 +301,7 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
     if (unconsumed) {
       expectedShopifyId = unconsumed.shopifyId;
       log.warn(
-        { state: q.state },
+        { state: q.state, loginTraceId: pending.loginTraceId },
         'CAPI callback: Shopify reused an existing customer-account session instead of authenticating via our IdP — verifying the returned identity before issuing a session',
       );
     }
@@ -300,9 +324,17 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
   if (pending.returnTo && pending.grantToken) {
     if (expectedShopifyId) {
       log.warn(
-        { state: q.state },
+        { state: q.state, loginTraceId: pending.loginTraceId },
         'CAPI checkout warm-up refused: Shopify reused an existing session, so the identity behind the planted cookie is unproven',
       );
+      // Cosmetic, not blocking: the refusal is the feature and a retry recovers.
+      reportDegradation({
+        userImpact:
+          'Intended, not a fault. Shopify reused an existing session, so whose cookie was planted is unprovable and the checkout warm-up was refused. Retry normally works.',
+        impact: 'cosmetic',
+        at: 'routes/capi_handlers.ts:capiCallbackHandler',
+        code: 'capi_warmup_session_reused',
+      });
       const bounce = redirectToLoginAfterFailedCallback(c, 'session-reused');
       if (bounce) return bounce;
       throw new UnauthorizedError('Could not confirm who this checkout session belongs to', {
@@ -368,6 +400,7 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
   if (expectedShopifyId) {
     let actualShopifyId: string | null = null;
     let idToken: string | undefined;
+    let identityCheckThrew = false;
     try {
       const record = await getCapiSession(sessionId);
       idToken = record?.idToken;
@@ -375,8 +408,20 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
         ? ((await getCapiCustomer(record.accessToken))?.shopifyId ?? null)
         : null;
     } catch (cause) {
-      // Could not prove identity either way — fail closed, same as a mismatch.
-      log.warn({ err: cause, state: q.state }, 'CAPI identity check failed; refusing the session');
+      identityCheckThrew = true;
+      // Could not prove identity either way: fail closed, same as a mismatch.
+      // Reported so a real CAPI outage is not invisible; it refuses real customers too.
+      reportDegradation({
+        userImpact: 'Login is refused and the customer is sent back to the login page to retry.',
+        impact: 'blocking',
+        at: 'routes/capi_handlers.ts:capiCallbackHandler',
+        code: 'capi_identity_check_failed',
+        cause,
+      });
+      log.warn(
+        { err: cause, state: q.state, loginTraceId: pending.loginTraceId },
+        'CAPI identity check failed; refusing the session',
+      );
     }
     if (!actualShopifyId || !sameShopifyCustomer(actualShopifyId, expectedShopifyId)) {
       await deleteCapiSession(sessionId).catch((cause) => {
@@ -389,9 +434,31 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
         });
       });
       log.warn(
-        { state: q.state },
-        'CAPI callback refused: Shopify returned a different customer than the one just verified',
+        { state: q.state, loginTraceId: pending.loginTraceId, identityResolved: !!actualShopifyId },
+        actualShopifyId
+          ? 'CAPI callback refused: Shopify returned a different customer than the one just verified'
+          : 'CAPI callback refused: could not establish which customer Shopify returned',
       );
+      // Same refusal, two causes: split them so they alert differently.
+      if (actualShopifyId) {
+        // The guard doing its job; the Shopify-logout bounce below fixes the retry.
+        reportDegradation({
+          userImpact:
+            'Intended, not a fault. A stale Shopify cookie returned a different customer than the one who passed OTP, so login was refused rather than signing them into the wrong account. Retry normally works.',
+          impact: 'cosmetic',
+          at: 'routes/capi_handlers.ts:capiCallbackHandler',
+          code: 'capi_session_reused',
+        });
+      } else if (!identityCheckThrew) {
+        // Nobody named and nothing threw: not the stale-cookie case, so it stays loud.
+        reportDegradation({
+          userImpact:
+            'Login refused because we could not establish which customer Shopify returned. NOT the usual stale-cookie case. Check Shopify Customer Account API health if this repeats.',
+          impact: 'blocking',
+          at: 'routes/capi_handlers.ts:capiCallbackHandler',
+          code: 'capi_identity_unresolved',
+        });
+      }
 
       // Refusing alone would dead-end them: Shopify still holds the OTHER
       // customer's session, so every retry short-circuits to the same wrong
@@ -417,7 +484,7 @@ export async function capiCallbackHandler(c: Context): Promise<Response> {
   // URL (browser history, access logs, Referer leakage). Redirect with a
   // short-lived, single-use claim token instead; the frontend trades it for
   // the real id via capiClaimSessionHandler below, in a JSON body, not a URL.
-  const claimToken = await createClaimToken(sessionId, pending.bindHash);
+  const claimToken = await createClaimToken(sessionId, pending.bindHash, pending.loginTraceId);
   const landing = new URL(CAPI_CALLBACK_LANDING_URL as string);
   landing.searchParams.set('capi_claim', claimToken);
   return c.redirect(landing.toString(), 302);
@@ -495,14 +562,22 @@ export async function capiClaimSessionHandler(c: Context): Promise<Response> {
   const body = await parseBody(c, capiClaimBodySchema);
   const claimed = await consumeClaimToken(body.claimToken);
   if (!claimed) {
+    log.warn({}, 'capi/claim refused: claim token is unknown, expired, or already spent');
     throw new NotFoundError('Unknown or expired CAPI claim token', {
       code: 'capi_claim_not_found',
     });
   }
+  setLoginTraceId(c, claimed.loginTraceId);
   // Bound to the browser that completed the CAPI flow. Without this, a single
   // relayed URL put a victim into the attacker's long-lived session — and the web
   // callback clears any v1 credential first, so the attacker's won outright.
   if (!bindSecretMatches(body.bindSecret, claimed.bindHash)) {
+    // hadBindHash separates a client that never sent the bind hash at verify from a real
+    // mismatch (a relayed link): very different incidents.
+    log.warn(
+      { loginTraceId: claimed.loginTraceId, hadBindHash: !!claimed.bindHash },
+      'capi/claim refused: browser binding did not match',
+    );
     throw new UnauthorizedError('This sign-in link was not issued to this browser', {
       code: 'capi_claim_not_bound',
     });
