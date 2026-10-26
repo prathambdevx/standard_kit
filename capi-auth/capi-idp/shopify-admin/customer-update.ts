@@ -38,7 +38,9 @@ export const UPDATE_CUSTOMER_MUTATION = `
 `;
 
 type Deps = {
-  adminUpdate?: (patch: ShopifyCustomerPatch) => Promise<{ id: string; email: string | null }>;
+  adminUpdate?: (
+    patch: ShopifyCustomerPatch,
+  ) => Promise<{ id: string; email: string | null; phone: string | null }>;
 };
 
 /** Patches an existing Shopify customer. Throws ConflictError (customer_email_taken /
@@ -47,14 +49,14 @@ type Deps = {
 export async function updateShopifyCustomer(
   patch: ShopifyCustomerPatch,
   deps: Deps = {},
-): Promise<{ id: string; email: string | null }> {
+): Promise<{ id: string; email: string | null; phone: string | null }> {
   const adminUpdate = deps.adminUpdate ?? defaultAdminUpdate;
   return adminUpdate(patch);
 }
 
 async function defaultAdminUpdate(
   patch: ShopifyCustomerPatch,
-): Promise<{ id: string; email: string | null }> {
+): Promise<{ id: string; email: string | null; phone: string | null }> {
   const data = await shopifyAdminGraphQL<CustomerUpdateData>(UPDATE_CUSTOMER_MUTATION, {
     input: patch,
   });
@@ -83,5 +85,5 @@ async function defaultAdminUpdate(
       code: 'customer_update_failed',
     });
   }
-  return { id: customer.id, email: customer.email };
+  return { id: customer.id, email: customer.email, phone: customer.phone };
 }

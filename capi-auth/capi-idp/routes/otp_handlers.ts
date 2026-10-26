@@ -236,7 +236,7 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
       ? await findCustomerByPhone(challenge.username)
       : await findCustomerByEmail(challenge.username);
 
-  let shopifyCustomer: { id: string; email: string | null };
+  let shopifyCustomer: { id: string; email: string | null; phone: string | null };
   try {
     shopifyCustomer = existing
       ? await updateShopifyCustomer({
@@ -291,7 +291,9 @@ export async function submitOtpDetailsHandler(c: Context): Promise<Response> {
       shopifyId: shopifyCustomer.id,
       name: `${body.firstName} ${body.lastName}`.trim(),
       email: shopifyCustomer.email ?? email,
-      phone: phone ?? null,
+      // Shopify's stored value, not the typed one: it normalises the number and keeps
+      // none when it rejects it, so trusting our input drifts the local row.
+      phone: shopifyCustomer.phone ?? null,
     });
   } catch (err) {
     try {
