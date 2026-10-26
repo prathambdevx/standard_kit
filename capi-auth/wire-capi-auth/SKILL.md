@@ -72,9 +72,19 @@ Concretely, for the target project:
    `.env.example` and its local `.env`. Never fill a real secret into `.env.example`; use a
    placeholder and tell the user which ones need real values (Shopify client id/secret, signing
    key, DB URL).
-5. Mount the routes and middleware in the target's app entrypoint, matching how `capi-idp/routes/index.ts`
+5. Check the files added since the first release came across, because a wiring that misses them
+   silently loses the trace and abuse protection: `capi-idp/client_ip.ts` (rightmost
+   `x-forwarded-for`, keys the per-IP OTP caps), `capi-idp/routes/login_trace.ts` and
+   `capi-idp/routes/otp_caller.ts` (login trace id and caller on every OTP metric). Fix their
+   relative imports like the rest. Tell the user the kit logs with the plain `log` and recommends a
+   logger that attaches `currentLoginTraceId()` to every line.
+6. Add the unverified-send breaker env vars (`OTP_UNVERIFIED_BREAKER_MODE`, optional
+   `OTP_UNVERIFIED_SEND_MAX`, `OTP_UNVERIFIED_TTL_SECONDS`) to the target's env schema with the
+   defaults from the README (`log`, 3, 86400). Leave the mode at `log`: do not set `enforce`
+   without the user's say-so. Add frontend copy for the error code `otp_unverified_locked`.
+7. Mount the routes and middleware in the target's app entrypoint, matching how `capi-idp/routes/index.ts`
    is structured.
-6. Point out the "Shopify-side setup" section's steps explicitly — these are the ones that need a
+8. Point out the "Shopify-side setup" section's steps explicitly: these are the ones that need a
    human clicking through Shopify's admin (custom IdP registration, redirect URIs, the Logout URI
    field). **This skill cannot automate them.** Report them as a checklist for the user, not as
    done.
@@ -91,10 +101,13 @@ Concretely, for the target project:
    Reference `capi-web/examples/login_flow_example.tsx` for the shape, but build the target's own
    styled version — do not literally copy the example file into product code, it says so in its
    own header.
-4. If the target already has write-through stores (cart, wishlist, saved addresses, anything that
+4. Wire `capi-web/login_redirect.ts`: call `stashLoginRedirect(?redirect=)` when the login page
+   mounts (login page only, never on the callback page) and `takeLoginRedirect() ?? <default page>`
+   after `exchangeCapiClaim()` succeeds, so the customer lands where they were headed.
+5. If the target already has write-through stores (cart, wishlist, saved addresses, anything that
    calls the BFF as a logged-in customer), wire `capi-web/heal_auth.ts`'s pattern into each one's
    catch block. If it has none yet, skip this — nothing to wire.
-5. Wire `onAuthEdge()` (from `capi-web/commerce.ts`) for any store that needs to merge guest state
+6. Wire `onAuthEdge()` (from `capi-web/commerce.ts`) for any store that needs to merge guest state
    on login / reset on logout, same pattern as bsc-platform's cart/wishlist stores (referenced in
    `../README.md`).
 
@@ -119,9 +132,16 @@ Report a pass/fail checklist, not a narrative "looks good":
 4. **Frontend imports cleanly** — confirm `capi-web/commerce.ts`'s `createAuthStores` and the two
    store files import without error from wherever you placed them, and that `useIsLoggedIn`/
    `useSessionHydrated` resolve to real hooks (not `undefined`) in the target's own module graph.
-5. **Final summary** — a table: what was copied (file counts, not every path), what env vars still
+5. **Trace and abuse checks** - after one OTP verify, confirm the log lines carry the same
+   `loginTraceId` / `login_trace_id`, and that an `otp_*` metric line has `client_ip`. Confirm the
+   per-IP caps read `clientIp()` from `capi-idp/client_ip.ts` (rightmost entry), not a leftmost
+   read. Confirm the breaker mode is `log`.
+6. **Edge protection** - the WAF rate rule, fingerprint blocks and path normalisation are not code
+   in this kit. List them as manual items from the README section "Edge protection for OTP
+   endpoints" and do not call the wiring finished without saying they are open.
+7. **Final summary**: a table: what was copied (file counts, not every path), what env vars still
    need real values filled in by a human, and the explicit list of Shopify-admin steps from Step
-   2.6 that remain manual. Never claim "auth is fully wired" while that manual list is non-empty —
+   2.8 that remain manual. Never claim "auth is fully wired" while that manual list is non-empty : 
    say "code-complete; N manual Shopify-admin steps remain" instead.
 
 ## Common mistakes this skill exists to prevent

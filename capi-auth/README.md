@@ -246,8 +246,8 @@ Both pieces assume:
 | `index.ts` | Core engine: generate a code, hash it (never stored plaintext), create/verify/resend a challenge, constant-time comparison. |
 | `provider.ts` | Delivery abstraction — swap between the in-house engine and a real vendor without touching callers. See the comment at the top for the pattern to follow when you add one. |
 | `sms.ts` / `email.ts` | Delivery-channel stubs for the in-house engine — replace with real SMS/email sending, or leave mocked outside production. |
-| `rate_limit.ts` | Per-identity (phone or email) and per-IP send caps, on top of `repositories/otp_challenges.ts`'s own resend cooldown. **Read the comment at the top of this file before changing the numbers** — the send cooldown is the actual anti-abuse throttle; the hourly/daily counters are a looser backstop and should stay generous enough that real SMS delivery delays don't lock out legitimate customers. |
-| `metrics.ts` | Latency/success instrumentation hooks. |
+| `rate_limit.ts` | Per-identity (phone or email) and per-IP send caps, on top of `repositories/otp_challenges.ts`'s own resend cooldown. **Read the comment at the top of this file before changing the numbers**: the send cooldown is the actual anti-abuse throttle; the hourly/daily counters are a looser backstop and should stay generous enough that real SMS delivery delays don't lock out legitimate customers. Also holds the **unverified-send breaker**, a per-number cap on sends that were never verified (see `otp-engine/README.md`). |
+| `metrics.ts` | Structured `otp_*` log events. Every line carries the recipient, `otpId` on send/resend, and (when a handler called `noteOtpCaller`) request id, login trace id and the caller: client ip, proxy ip, hop count and user agent. `setOtpMetricContext()` is how a handler adds per-request fields. |
 | `repositories/otp_challenges.ts`, `repositories/otp_attempts.ts` | Redis-backed challenge + attempt-counter storage, all TTL'd, no cleanup job needed. |
 
 **Env vars:**
@@ -256,6 +256,9 @@ Both pieces assume:
 OTP_HASH_SECRET=          # required at call time — HMAC secret for hashing codes at rest. Generate with: openssl rand -hex 32
 APP_STAGE=                # dev | uat | prod — gates SMS/email sending (sms.ts, email.ts). NOT the same as NODE_ENV,
                            # which is `production` on dev and uat too, so it can't tell environments apart on its own.
+OTP_UNVERIFIED_BREAKER_MODE=log   # off | log | enforce. `log` (default) counts and logs otp_unverified_would_lock but refuses nothing; flip to `enforce` after a week of logs shows it only touches pumping numbers
+OTP_UNVERIFIED_SEND_MAX=3         # optional: sends to one number with no verify before the breaker trips (default 3)
+OTP_UNVERIFIED_TTL_SECONDS=86400  # optional: window for that count, from the first unverified send (default 24h)
 ```
 
 **Verified against NIST SP 800-63B + OWASP** — see `otp-engine/README.md` for the full checklist
@@ -276,9 +279,12 @@ real measured latency numbers if you need to set expectations with a client/PM.
 | `capi/session_store.ts` | **Postgres** storage for the actual CAPI session (no TTL — it lives as long as Shopify honours the refresh token), plus the single-use claim-token exchange (still Redis, 5-min TTL) the frontend uses to pick up its session id after the OAuth redirect chain completes. Stores the sha256 of the session id, never the raw bearer, so a table dump yields nothing replayable. |
 | `capi/customer.ts` | Fetches the CAPI-authenticated customer's identity from Shopify's Customer Account API. |
 | `shopify-admin/customer-lookup.ts` | Look up an existing Shopify customer by phone or email via the Admin API — the "does this identity already exist" check for a verified OTP. Only relevant to the custom-IdP path (Shopify's own hosted login handles this itself). |
-| `shopify-admin/customer-create.ts` | Creates a brand-new Shopify customer for a phone/email-verified signup with no existing record. **Read the comment on `CREATE_CUSTOMER_MUTATION` before touching this file** — see "Known gotchas" below. |
+| `shopify-admin/customer-create.ts` | Creates a brand-new Shopify customer (and returns the `phone` Shopify actually stored, which signup saves instead of the typed value) for a phone/email-verified signup with no existing record. **Read the comment on `CREATE_CUSTOMER_MUTATION` before touching this file**: see "Known gotchas" below. |
 | `shopify-admin/customer-update.ts` | Patches an EXISTING Shopify customer (`customerUpdate`) to fill in a missing email/phone — the other half of `customer-create.ts`. Keeps their customer id, so orders and addresses stay attached. Maps "already been taken" to a `ConflictError` the signup form can act on, same as create. |
 | `routes/index.ts`, `routes/otp_handlers.ts`, `routes/idp_handlers.ts`, `routes/capi_handlers.ts`, `routes/shared.ts`, `routes/schemas.ts` (see `routes/variables.md`) | The Hono routes: OTP send/verify/resend/details, the IdP endpoints (`/authorize`, `/token`, `/.well-known/*`, JWKS) if using the custom IdP, and the CAPI endpoints (`/capi/start`, `/capi/callback`, `/capi/claim`, `/capi/logout`, `/capi/checkout-grant` — mobile-app-only, mints a warm-up grant for an already-signed-in customer opening a checkout webview; see "Known gotchas"). |
+| `client_ip.ts` | `clientIp(c)`: the **rightmost** `x-forwarded-for` entry. The ALB appends the address it saw, so only the last entry cannot be forged. This is the key for the per-IP OTP caps, which are the limit on SMS pumping across many numbers. Own file on purpose: a security control must not be reused for analytics code that wants the real (leftmost) client address. |
+| `routes/login_trace.ts` | `mintLoginTraceId()`, `setLoginTraceId(c, id)`, `currentLoginTraceId()`. One id minted at OTP verify and carried through the silent grant, IdP interaction, auth code, CAPI pending record and claim token. Log it on every refusal and one grep finds the whole login. |
+| `routes/otp_caller.ts` | `noteOtpCaller(c, loginTraceId?)`: puts request id, login trace id and caller on every `otp_*` metric of the request. Called at the top of send, resend and verify. |
 | `email-domain.ts` | The one email-validation module: `isWellFormedEmail()` (shape, via `z.string().email()`) and `checkEmailDomain()` (live MX lookup). Used by the details handler and by the login gate. The MX check fails open on any timeout/resolver error — only a confirmed no-MX-records result rejects. |
 | `middleware/customer.ts` | Route-gating middleware — resolves a `capi_sess_<uuid>` session id from the `Authorization: Bearer` header to a local customer. `requireCustomer` 401s when missing/invalid; `optionalCustomer` + `readOptionalCustomer` resolve the same credential without ever throwing, for a route that serves guests and signed-in shoppers from one handler (wishlist, PDP) — an invalid/expired token degrades to guest rather than 401ing a page that renders fine without auth. If your app also has some other login path issuing a different bearer-credential shape on the same header, branch on a prefix the same way this file's own comment describes — resolve each kind through its own function, cached under its own key prefix. |
 | `repositories/customers.ts`, `customer_signup.ts` | Postgres upsert logic for the local `Customer` row, keyed by `shopifyId`, lazily backfilled from Shopify on a cache miss. `customer_signup.ts` degrades rather than fails when the typed phone (opportunistic, never OTP-proven) is already held by a different local row — Shopify has already minted the account by that point, so completing the signup without that one field beats a 500 that strands a real customer with no local row at all. |
@@ -378,6 +384,7 @@ would inject) and copy-paste like the rest of this kit, not an installable packa
 | `capi-web/commerce.ts` | Wires the two stores together — `createAuthStores(storage)`, `useIsLoggedIn`/`useSessionHydrated` hooks, and `onAuthEdge()` for your own product stores (cart, wishlist, whatever) to hook the login/logout transition. |
 | `capi-web/bind_secret.ts` | Mints and reads the browser-binding secret the claim exchange requires — see "The one rule" below before skipping this. |
 | `capi-web/capi_callback.ts` | `exchangeCapiClaim()` — trades the one-time claim token from Shopify's redirect for the real CAPI session id, and populates both stores correctly. |
+| `capi-web/login_redirect.ts` | `stashLoginRedirect()` / `takeLoginRedirect()`: keeps the login page's `?redirect=` across the full-page Shopify walk (sessionStorage, same-tab, same-origin paths only) so the callback can send the customer where they were headed. |
 | `capi-web/heal_auth.ts` | `isAuthError()` + the `healAuthIfRejected` pattern every write-through store (cart, wishlist, addresses) needs in its catch block. |
 | `capi-web/examples/login_flow_example.tsx` | A deliberately minimal, unstyled reference for the OTP-send → verify → (details-required) → claim state machine. Not meant to be used as-is — see its own file header. |
 
@@ -637,6 +644,85 @@ re-run and safe to run alongside live traffic.
   `return_to` (minting the grant but never passing it through `/capi/start`) means the redirect
   chain still plants the cookie, but the browser ends up on your normal login-landing page instead
   of checkout — the cookie is there, but the customer isn't where they expected to be.
+
+- **A failed login leaves no trace unless every hop logs it with one shared id.** The login is
+  seven hops across three processes (OTP verify, silent grant, IdP authorize, token endpoint, CAPI
+  callback, claim) and most refusals were a bare redirect or a raw OAuth `{ error }` body that
+  never reaches your error handler, so they logged nothing. Mint `loginTraceId` at `otp/verify`
+  (before anything that can fail) and thread it through the same records `bindHash` rides: the
+  silent grant, the IdP auth code, the `PendingAuth` record and the claim token. Then log it on
+  every refusal path. Three details that bit: the callback refusals run **before** the pending
+  record is consumed, so `peekPending` first or they carry no id; signup is two requests, so
+  `otp/details` mints its own id and `otpId` joins the two; and the token endpoint answers a bare
+  `invalid_grant` for three different reasons, so route every refusal through one `refuseToken`
+  helper that logs the reason. Claim refusals log `hadBindHash`, which separates a client that
+  never sent the bind hash from a genuine mismatch (a relayed link). This kit uses the plain
+  `log` from `@devxcommerce/bff-core`, which does not attach the id by itself, so pass
+  `loginTraceId` in the fields. A logger that reads the id from request context and adds it to
+  every line (so the field cannot be forgotten) is recommended: `currentLoginTraceId()` exists
+  for that.
+- **Not every refusal is a fault: split the session-reuse refusals by severity.** When Shopify
+  reuses a stale session and the identity check refuses it (`capi_session_reused`,
+  `capi_warmup_session_reused`), the guard did its job and a retry works, so report it as
+  `cosmetic`. When the identity could not be established and nothing threw
+  (`capi_identity_unresolved`), that is NOT the stale-cookie case, so report it as `blocking`. A
+  throw already reports `capi_identity_check_failed`. If you page on one severity for all three,
+  the intended protection looks like an incident. If you have no `reportDegradation` equivalent,
+  keep the split as log levels (info/warn for cosmetic, error for blocking).
+- **Key the per-IP OTP caps on the rightmost `x-forwarded-for` entry** (`capi-idp/client_ip.ts`).
+  The leftmost entry is whatever the caller typed. Reading it let one caller get a fresh per-IP
+  bucket on every request just by sending its own header, and the per-IP cap is the only limit on
+  SMS spend across many different numbers. This holds only when exactly one trusted proxy appends
+  the address (an ALB); behind a CDN plus an ALB, work out which entry your own edge wrote.
+- **Save the phone Shopify stored, not the phone you sent.** Shopify normalises numbers and keeps
+  none at all when it rejects one, so persisting the typed value drifts your row from Shopify the
+  moment the account is created, which later lets a verified OTP resolve to the wrong account.
+  `customerCreate` and `customerUpdate` both query `phone`; signup saves what comes back.
+- **Carry the login page's `?redirect=` across the Shopify walk.** The v2 login leaves your site
+  for a full-page walk to Shopify, so in-memory state is gone when the callback lands, and the
+  customer always ended up on the account page. `capi-web/login_redirect.ts` stashes it in
+  sessionStorage. The stash is cleared when the login page loads with no target (so an abandoned
+  login cannot hijack a later one), read once by the callback, and accepts same-origin paths only.
+  Never call the stash function on the callback page itself, or it wipes the target first.
+
+## Edge protection for OTP endpoints
+
+The in-app limits (per-number caps, per-IP caps, the resend cooldown) were **not enough** in the
+September 2026 SMS-pumping incident, and the reasons are worth knowing before you ship OTP:
+
+- The bot sent a few OTPs per number, under every per-number cap, across thousands of numbers.
+- It rotated its network identity, so a per-IP cap only slowed it. An app limit also runs AFTER
+  the request has been accepted, parsed and routed, so each attempt still costs compute and a
+  Redis round trip.
+- Per-number caps stop one victim being flooded. They do not stop a caller walking a list of numbers.
+- Result: tens of thousands of SMS sent, and under a third of numbers ever verified.
+
+Add these at the edge, in front of the BFF, and keep the app limits as the second layer:
+
+1. **A WAF rate-based rule on the SMS-costing paths only** (`/otp/send` and `/otp/resend`), keyed
+   per IP. The shape that runs in production: 60 requests per 5 minutes per IP, action Block.
+   Scope it to those two paths, not all of `/auth`: the wider path also carries Shopify's own IdP
+   callers and shared-NAT stores, and a rule on it blocks real customers.
+2. **Block the bot's fingerprint once you have it**: its TLS fingerprint (JA3) and any proxy cookie
+   it carries, on any path. Add both, because the bot rotates one of them.
+3. **Normalise the path before matching.** Frameworks like Hono decode percent-encoding before
+   routing, so `/%61uth/%6ftp/send` reaches `/auth/otp/send`. A rule that only lowercases the raw
+   path is bypassed by one encoded character. Apply URL decode, then normalise path, then lowercase
+   to every path match.
+4. **A Challenge action on the OTP POST paths** for browsers, with your native app excluded by a
+   client header it sends. This needs the web app to fetch and send the WAF token, so roll it out in
+   steps: ship the bootstrap rule, wire the token in the web app, confirm the token header appears
+   on OTP requests in the WAF logs, and only then switch to the real Challenge rule.
+5. **Bot detection as a managed rule group** (the common tier of the cloud provider's bot control)
+   on the public web edge. Watch it closely: it also blocked legitimate non-browser callers (SEO
+   crawlers, link-preview fetches, platform revalidation calls, app-link association files), and
+   one retry storm from a blocked preview fetch tripped the blanket rate limit and locked out a
+   whole office network. Exempt known-good callers by IP or a shared-key header, never by user agent.
+6. **Log WAF decisions** to a log group so you can see which rule terminated each request.
+
+Then turn on the unverified-send breaker in `log` mode first (see `otp-engine/README.md`), read a
+week of `otp_unverified_would_lock` lines, and move to `enforce` only when it touches only pumping
+numbers. Log the caller on every OTP metric (`otp_caller.ts`) so an incident can be attributed.
 
 ## What to decide for your own project
 
