@@ -19,6 +19,7 @@ import {
   startAuthorize,
 } from '../../services/idp/provider';
 import { takeSilentGrant } from '../../services/idp/session_store';
+import { setLoginTraceId } from './login_trace';
 import { idpAuthorizeQuerySchema, idpLogoutQuerySchema, idpTokenBodySchema } from './schemas';
 import { INTERACTION_COOKIE, issuer, SILENT_GRANT_COOKIE } from './shared';
 
@@ -45,7 +46,14 @@ export async function authorizeHandler(c: Context): Promise<Response> {
     codeChallenge: q.code_challenge,
     codeChallengeMethod: q.code_challenge_method,
   });
-  if (!result.ok) return c.json({ error: result.error }, 400);
+  if (!result.ok) {
+    // Shopify refused at the very first hop; a bare OAuth 400 leaves no other trace.
+    log.warn(
+      { error: result.error, clientId: q.client_id, redirectUri: q.redirect_uri },
+      'idp/authorize refused the request',
+    );
+    return c.json({ error: result.error }, 400);
+  }
 
   // This browser may have just verified OTP on our own site and be mid
   // silent-CAPI-handoff (respondWithSilentCapiHandoff / startCapiAuthorizeHandler)
@@ -62,12 +70,29 @@ export async function authorizeHandler(c: Context): Promise<Response> {
     const grant = await takeSilentGrant(silentGrantToken);
     deleteCookie(c, SILENT_GRANT_COOKIE, { path: '/' });
     if (grant) {
-      const completed = await completeInteraction(result.interaction.id, grant);
+      setLoginTraceId(c, grant.loginTraceId);
+      const completed = await completeInteraction(result.interaction.id, grant, grant.loginTraceId);
       if (completed.ok) return c.redirect(completed.redirectUrl, 302);
       // Fell through (interaction TTL race, practically impossible right
       // after startAuthorize just created it) — don't leave the browser
       // stuck, drop to the normal login-page prompt below.
+      log.warn(
+        { loginTraceId: grant.loginTraceId, interactionId: result.interaction.id },
+        'idp/authorize: silent grant was consumed but the interaction could not be completed: falling back to the login page',
+      );
+    } else {
+      // Cookie present but the grant is spent or past its TTL; no grant means no trace id.
+      log.warn(
+        { clientId: q.client_id },
+        'idp/authorize: silent-grant cookie present but the grant was already consumed or expired: falling back to the login page',
+      );
     }
+  } else if (q.prompt !== 'none') {
+    // No cookie is ambiguous by design (a checkout-initiated login arrives this way), so info.
+    log.info(
+      { clientId: q.client_id },
+      'idp/authorize: no silent-grant cookie on the request: treating this as an interactive login',
+    );
   }
 
   // prompt=none (OIDC §3.1.2.6) forbids any UI — checkout's sso=silent sends
@@ -104,10 +129,24 @@ export async function authorizeHandler(c: Context): Promise<Response> {
   return c.redirect(env.LOGIN_PAGE_URL, 302);
 }
 
+// Shopify's server is the only caller and these replies are raw OAuth JSON that never
+// reaches the AppError handler, so a refusal logs nothing unless it logs itself.
+function refuseToken(
+  c: Context,
+  error: string,
+  status: 400 | 401,
+  fields: Record<string, unknown> = {},
+): Response {
+  log.warn({ error, ...fields }, `idp/token refused: ${error}`);
+  return c.json({ error }, status);
+}
+
 export async function tokenHandler(c: Context): Promise<Response> {
   const raw = new URLSearchParams(await c.req.text());
   const parsed = idpTokenBodySchema.safeParse(Object.fromEntries(raw.entries()));
-  if (!parsed.success) return c.json({ error: 'invalid_request' }, 400);
+  if (!parsed.success) {
+    return refuseToken(c, 'invalid_request', 400, { reason: 'body_failed_schema' });
+  }
   const body = parsed.data;
 
   if (
@@ -117,39 +156,55 @@ export async function tokenHandler(c: Context): Promise<Response> {
       bodyClientSecret: body.client_secret,
     })
   ) {
-    return c.json({ error: 'invalid_client' }, 401);
+    // Credential drift between us and Shopify would otherwise break every login silently.
+    return refuseToken(c, 'invalid_client', 401, {
+      viaBasicAuth: !!c.req.header('authorization'),
+    });
   }
 
   if (body.grant_type === 'authorization_code') {
-    if (!body.code || !body.redirect_uri) return c.json({ error: 'invalid_request' }, 400);
+    if (!body.code || !body.redirect_uri) {
+      return refuseToken(c, 'invalid_request', 400, {
+        reason: 'missing_code_or_redirect_uri',
+        hasCode: !!body.code,
+        hasRedirectUri: !!body.redirect_uri,
+      });
+    }
     const result = await exchangeAuthorizationCode({
       code: body.code,
       redirectUri: body.redirect_uri,
       codeVerifier: body.code_verifier,
       issuer: issuer(c),
     });
-    if (!result.ok) return c.json({ error: result.error }, 400);
+    // exchangeAuthorizationCode logs which of the three refusals it was.
+    if (!result.ok) return refuseToken(c, result.error, 400, { grantType: 'authorization_code' });
+    setLoginTraceId(c, result.loginTraceId);
     return c.json(result.tokens);
   }
 
   if (body.grant_type === 'refresh_token') {
-    if (!body.refresh_token) return c.json({ error: 'invalid_request' }, 400);
+    if (!body.refresh_token) {
+      return refuseToken(c, 'invalid_request', 400, { reason: 'missing_refresh_token' });
+    }
     const result = await exchangeRefreshToken({
       refreshToken: body.refresh_token,
       issuer: issuer(c),
     });
-    if (!result.ok) return c.json({ error: result.error }, 400);
+    if (!result.ok) return refuseToken(c, result.error, 400, { grantType: 'refresh_token' });
     return c.json(result.tokens);
   }
 
-  return c.json({ error: 'unsupported_grant_type' }, 400);
+  return refuseToken(c, 'unsupported_grant_type', 400, { grantType: body.grant_type });
 }
 
 export async function userinfoHandler(c: Context): Promise<Response> {
   const auth = c.req.header('authorization') ?? '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
   const info = await getUserinfo(token, issuer(c));
-  if (!info) throw new UnauthorizedError('Invalid token', { code: 'idp_invalid_token' });
+  if (!info) {
+    log.warn({ hadBearer: !!token }, 'idp/userinfo refused: token did not verify');
+    throw new UnauthorizedError('Invalid token', { code: 'idp_invalid_token' });
+  }
   return c.json(info);
 }
 

@@ -18,6 +18,7 @@ export type IdpAuthCode = {
   sub: string;
   email: string;
   createdAt: Date;
+  loginTraceId: string | null; // carried from the silent grant / interaction, for cross-hop log correlation
 };
 
 type SaveInput = {
@@ -28,6 +29,7 @@ type SaveInput = {
   codeChallenge?: string;
   sub: string;
   email: string;
+  loginTraceId?: string;
 };
 
 export async function saveCode(input: SaveInput): Promise<void> {
@@ -40,6 +42,7 @@ export async function saveCode(input: SaveInput): Promise<void> {
     createdAt: String(Date.now()),
   };
   if (input.codeChallenge) fields.codeChallenge = input.codeChallenge;
+  if (input.loginTraceId) fields.loginTraceId = input.loginTraceId;
   const key = codeKey(input.code);
   await redis().hset(key, fields);
   await redis().expire(key, CODE_TTL_SECONDS);
@@ -72,6 +75,7 @@ export async function takeCode(code: string): Promise<IdpAuthCode | null> {
     sub: fields.sub ?? '',
     email: fields.email ?? '',
     createdAt: new Date(Number(fields.createdAt)),
+    loginTraceId: fields.loginTraceId ?? null,
   };
   if (Date.now() - row.createdAt.getTime() > CODE_TTL_SECONDS * 1000) return null;
   return row;

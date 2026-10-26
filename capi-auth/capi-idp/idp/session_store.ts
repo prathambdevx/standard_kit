@@ -17,6 +17,7 @@ export interface PendingAuth {
   codeVerifier: string;
   redirectUri: string;
   bindHash?: string; // carried from the silent grant through to the claim token
+  loginTraceId?: string; // carried the same way, for cross-hop log correlation
   // The silent-grant token this handshake was started for, kept so the callback
   // can verify the IdP actually consumed it. Shopify short-circuits /authorize
   // when it already holds a customer-account session — it never calls you, the
@@ -38,6 +39,12 @@ export async function putPending(state: string, data: PendingAuth): Promise<void
 /** Single-use via Redis's atomic GETDEL (Redis 7, no read-then-delete race). */
 export async function takePending(state: string): Promise<PendingAuth | null> {
   const raw = (await redis().call('GETDEL', pendingKey(state))) as string | null;
+  return raw ? (JSON.parse(raw) as PendingAuth) : null;
+}
+
+// Non-consuming read, same pattern as peekSilentGrant: lets a handler log the trace id before the real take.
+export async function peekPending(state: string): Promise<PendingAuth | null> {
+  const raw = await redis().get(pendingKey(state));
   return raw ? (JSON.parse(raw) as PendingAuth) : null;
 }
 
@@ -69,6 +76,7 @@ export interface SilentGrant {
   shopifyId: string;
   email: string;
   bindHash?: string; // sha256 of the binding cookie set on the browser that earned this grant
+  loginTraceId?: string; // minted at otp/verify, threaded through for cross-hop log correlation
 }
 
 export async function putSilentGrant(token: string, data: SilentGrant): Promise<void> {
