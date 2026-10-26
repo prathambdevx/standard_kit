@@ -4,6 +4,8 @@
 // a blip there just delays something non-critical; a blip here would mean
 // unlimited SMS spend for as long as Redis is down).
 import { redis, TooManyRequestsError } from '@devxcommerce/bff-core';
+import { env } from '../../config/env';
+import { recordOtpMetric } from './metrics';
 
 // The 30s resend cooldown (packages/commerce's RESEND_SECONDS) is the primary
 // throttle against pumping fraud — these are a looser backstop, not the front
@@ -79,4 +81,45 @@ export async function checkOtpVerifyRateLimit(ip: string): Promise<void> {
       code: 'otp_verify_rate_limited_ip',
     });
   }
+}
+
+// Unverified-send breaker: pumping bots send a few OTPs per number (under every cap above)
+// and verify none. Keyed on the number, so IP, TLS or URL-encoding rotation cannot dodge it.
+// Thresholds come from env so they can be tuned without a deploy of new code.
+const unverifiedSendMax = () => env.OTP_UNVERIFIED_SEND_MAX ?? 3;
+const unverifiedTtlSeconds = () => env.OTP_UNVERIFIED_TTL_SECONDS ?? 24 * 60 * 60;
+
+const unverifiedKey = (username: string) => `otp:unverified:${identityKey(username)}`;
+
+export type UnverifiedBreakerMode = 'off' | 'log' | 'enforce';
+
+/** Refuses a send once a number has OTP_UNVERIFIED_SEND_MAX sends with no verify behind it.
+ *  In `log` mode it only records that it would have (shadow rollout). */
+export async function checkOtpUnverifiedBreaker(
+  username: string,
+  mode: UnverifiedBreakerMode = env.OTP_UNVERIFIED_BREAKER_MODE ?? 'log',
+): Promise<void> {
+  if (mode === 'off') return;
+  const sends = Number((await redis().get(unverifiedKey(username))) ?? 0);
+  if (sends < unverifiedSendMax()) return;
+  if (mode === 'log') {
+    recordOtpMetric('otp_unverified_would_lock', { identifier: username, sends });
+    return;
+  }
+  recordOtpMetric('otp_unverified_locked', { identifier: username, sends });
+  throw new TooManyRequestsError('Too many OTPs sent to this number without verification', {
+    code: 'otp_unverified_locked',
+  });
+}
+
+/** Counts one more unverified send. The window starts at the first send, not the last. */
+export async function noteOtpSentUnverified(username: string): Promise<void> {
+  const key = unverifiedKey(username);
+  await redis().incr(key);
+  await redis().expire(key, unverifiedTtlSeconds(), 'NX');
+}
+
+/** A successful verify proves a person is on the other end, so start them clean. */
+export async function clearOtpUnverified(username: string): Promise<void> {
+  await redis().del(unverifiedKey(username));
 }
